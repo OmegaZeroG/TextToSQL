@@ -1,0 +1,45 @@
+name: Eval Suite
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "eval/**"
+      - "data/**"
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Seed database
+        run: python data/seed.py
+
+      - name: Start API server
+        env:
+          LLM_PROVIDER: groq
+          LLM_MODEL: llama-3.3-70b-versatile
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          cd backend
+          nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > server.log 2>&1 &
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8000/health && break
+            sleep 1
+          done
+
+      - name: Run golden dataset eval
+        run: python eval/run_eval.py --api-url http://localhost:8000
+
+      - name: Print server logs on failure
+        if: failure()
+        run: cat backend/server.log || true

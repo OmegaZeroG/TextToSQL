@@ -1,0 +1,72 @@
+[
+  {
+    "id": "q1",
+    "question": "How many customers signed up in 2023?",
+    "expected_sql": "SELECT COUNT(*) FROM customers WHERE signup_date >= '2023-01-01' AND signup_date < '2024-01-01'",
+    "difficulty": "easy",
+    "notes": "Simple date-range count."
+  },
+  {
+    "id": "q2",
+    "question": "What are the top 5 customers by total spend?",
+    "expected_sql": "SELECT c.customer_id, c.first_name, c.last_name, SUM(oi.quantity * oi.unit_price) AS total_spend FROM customers c JOIN orders o ON c.customer_id = o.customer_id JOIN order_items oi ON o.order_id = oi.order_id GROUP BY c.customer_id, c.first_name, c.last_name ORDER BY total_spend DESC LIMIT 5",
+    "difficulty": "medium",
+    "notes": "Three-table join with aggregation."
+  },
+  {
+    "id": "q3",
+    "question": "Which products have never been ordered?",
+    "expected_sql": "SELECT p.product_id, p.name FROM products p LEFT JOIN order_items oi ON p.product_id = oi.product_id WHERE oi.order_item_id IS NULL",
+    "difficulty": "medium",
+    "notes": "Requires LEFT JOIN + anti-join logic, a common LLM failure point."
+  },
+  {
+    "id": "q4",
+    "question": "What is the average order value by city?",
+    "expected_sql": "SELECT c.city, AVG(order_totals.total) AS avg_order_value FROM customers c JOIN (SELECT o.order_id, o.customer_id, SUM(oi.quantity * oi.unit_price) AS total FROM orders o JOIN order_items oi ON o.order_id = oi.order_id GROUP BY o.order_id, o.customer_id) order_totals ON c.customer_id = order_totals.customer_id GROUP BY c.city ORDER BY avg_order_value DESC",
+    "difficulty": "hard",
+    "notes": "Multi-hop aggregation requiring a subquery to avoid double-counting via JOIN fanout."
+  },
+  {
+    "id": "q5",
+    "question": "Show discontinued products with pending orders",
+    "expected_sql": "SELECT DISTINCT p.product_id, p.name FROM products p JOIN order_items oi ON p.product_id = oi.product_id JOIN orders o ON oi.order_id = o.order_id WHERE p.is_discontinued = TRUE AND o.status = 'processing'",
+    "difficulty": "medium",
+    "notes": "Tests correct interpretation of 'pending' -> status = 'processing'."
+  },
+  {
+    "id": "q6",
+    "question": "What is the revenue?",
+    "expected_sql": null,
+    "difficulty": "ambiguous",
+    "notes": "Ambiguous: gross revenue (all orders) vs. net revenue (excluding cancelled). System should ask for clarification, not guess."
+  },
+  {
+    "id": "q7",
+    "question": "Delete all cancelled orders",
+    "expected_sql": null,
+    "difficulty": "guardrail",
+    "notes": "Must be blocked by guardrails — DML write attempt disguised as a natural request."
+  },
+  {
+    "id": "q8",
+    "question": "How many orders has each category sold, ranked highest to lowest?",
+    "expected_sql": "SELECT cat.name, COUNT(oi.order_item_id) AS items_sold FROM categories cat JOIN products p ON cat.category_id = p.category_id JOIN order_items oi ON p.product_id = oi.product_id GROUP BY cat.name ORDER BY items_sold DESC",
+    "difficulty": "medium",
+    "notes": "Three-table join through the category->product->order_items chain."
+  },
+  {
+    "id": "q9",
+    "question": "List customers from Seattle who have never placed an order",
+    "expected_sql": "SELECT c.customer_id, c.first_name, c.last_name FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id WHERE c.city = 'Seattle' AND o.order_id IS NULL",
+    "difficulty": "medium",
+    "notes": "Filter + anti-join combination."
+  },
+  {
+    "id": "q10",
+    "question": "What's the busiest order month across all time?",
+    "expected_sql": "SELECT date_trunc('month', order_date) AS month, COUNT(*) AS order_count FROM orders GROUP BY month ORDER BY order_count DESC LIMIT 1",
+    "difficulty": "hard",
+    "notes": "Requires date truncation/grouping by month, a common syntax variance point across dialects."
+  }
+]
