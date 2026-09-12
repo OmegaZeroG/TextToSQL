@@ -3,7 +3,9 @@ tables, columns with types, foreign keys, and sample values for
 low-cardinality columns (helps the model disambiguate e.g. status strings)."""
 from dataclasses import dataclass, field
 
-from app.db import get_read_only_connection
+from sqlalchemy import inspect, text
+
+from app.db import get_engine
 
 
 @dataclass
@@ -20,49 +22,39 @@ class TableInfo:
     foreign_keys: list[tuple[str, str, str]]  # (column, ref_table, ref_column)
 
 
+SAMPLEABLE_TYPES = ("VARCHAR", "CHAR", "TEXT", "BOOLEAN", "ENUM")
+
+
 def introspect_schema() -> list[TableInfo]:
-    con = get_read_only_connection()
-    try:
-        tables = [row[0] for row in con.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-        ).fetchall()]
+    engine = get_engine()
+    inspector = inspect(engine)
 
-        result = []
-        for table in tables:
-            columns_raw = con.execute(
-                "SELECT column_name, data_type FROM information_schema.columns "
-                "WHERE table_name = ?", [table]
-            ).fetchall()
-
+    result = []
+    with engine.connect() as conn:
+        for table in inspector.get_table_names(schema="public"):
             columns = []
-            for col_name, col_type in columns_raw:
+            for col in inspector.get_columns(table, schema="public"):
+                col_type = str(col["type"]).upper()
                 sample_values = []
-                if col_type in ("VARCHAR", "BOOLEAN") :
+                if any(t in col_type for t in SAMPLEABLE_TYPES):
                     try:
-                        rows = con.execute(
-                            f'SELECT DISTINCT "{col_name}" FROM "{table}" '
-                            f'WHERE "{col_name}" IS NOT NULL LIMIT 5'
-                        ).fetchall()
+                        rows = conn.execute(text(
+                            f'SELECT DISTINCT "{col["name"]}" FROM "{table}" '
+                            f'WHERE "{col["name"]}" IS NOT NULL LIMIT 5'
+                        )).fetchall()
                         sample_values = [r[0] for r in rows]
                     except Exception:
                         pass
-                columns.append(ColumnInfo(name=col_name, type=col_type, sample_values=sample_values))
-
-            fk_rows = con.execute("""
-                SELECT constraint_column_names, referenced_table, referenced_column_names
-                FROM duckdb_constraints()
-                WHERE table_name = ? AND constraint_type = 'FOREIGN KEY'
-            """, [table]).fetchall()
+                columns.append(ColumnInfo(name=col["name"], type=col_type, sample_values=sample_values))
 
             foreign_keys = []
-            for col_names, ref_table, ref_col_names in fk_rows:
-                for c, rc in zip(col_names, ref_col_names):
-                    foreign_keys.append((c, ref_table, rc))
+            for fk in inspector.get_foreign_keys(table, schema="public"):
+                ref_table = fk["referred_table"]
+                for col_name, ref_col in zip(fk["constrained_columns"], fk["referred_columns"]):
+                    foreign_keys.append((col_name, ref_table, ref_col))
 
             result.append(TableInfo(name=table, columns=columns, foreign_keys=foreign_keys))
-        return result
-    finally:
-        con.close()
+    return result
 
 
 def format_schema_for_prompt(tables: list[TableInfo], relevant_tables: set[str] | None = None) -> str:

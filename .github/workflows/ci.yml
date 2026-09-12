@@ -11,6 +11,28 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: texttosql
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/texttosql
+      LLM_PROVIDER: groq
+      LLM_MODEL: llama-3.3-70b-versatile
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -25,10 +47,6 @@ jobs:
         run: python data/seed.py
 
       - name: Start API server
-        env:
-          LLM_PROVIDER: groq
-          LLM_MODEL: llama-3.3-70b-versatile
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
           cd backend
           nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > server.log 2>&1 &

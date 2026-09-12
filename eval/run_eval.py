@@ -8,22 +8,25 @@ Usage: python run_eval.py [--api-url http://localhost:8000]
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-import duckdb
+import pandas as pd
 import requests
+from sqlalchemy import create_engine, text
 
 DATASET_PATH = Path(__file__).parent / "golden_dataset.json"
-DB_PATH = Path(__file__).parent.parent / "data" / "sample.duckdb"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/texttosql"
+)
 
 
-def run_expected_sql(sql: str):
-    con = duckdb.connect(str(DB_PATH), read_only=True)
-    try:
-        return con.execute(sql).fetch_df()
-    finally:
-        con.close()
+def run_expected_sql(sql: str) -> pd.DataFrame:
+    engine = create_engine(DATABASE_URL)
+    with engine.connect() as conn:
+        result = conn.execute(text(sql))
+        return pd.DataFrame(result.fetchall(), columns=list(result.keys()))
 
 
 def main():

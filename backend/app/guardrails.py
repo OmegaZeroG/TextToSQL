@@ -1,8 +1,9 @@
 """Static safety checks a generated SQL statement must pass before execution.
 
-Layered defense: even if a check here has a gap, DuckDB is opened
-read_only=True (see db.py), so a write statement fails at the engine level
-regardless of what slips past this layer.
+Layered defense: even if a check here has a gap, every query runs inside
+an explicit `SET TRANSACTION READ ONLY` transaction (see db.py), so a
+write statement fails at the database level regardless of what slips
+past this layer.
 """
 import re
 from dataclasses import dataclass

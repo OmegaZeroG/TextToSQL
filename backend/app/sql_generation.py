@@ -6,7 +6,7 @@ from app.models import GeneratedSQL
 from app.schema_introspection import TableInfo, filter_relevant_tables, format_schema_for_prompt
 
 SYSTEM_PROMPT = """You are a senior data analyst that translates natural language questions into \
-DuckDB SQL queries. Follow these rules strictly:
+PostgreSQL queries. Follow these rules strictly:
 
 1. Only ever write a single SELECT (or WITH ... SELECT) statement. Never write INSERT, UPDATE, \
 DELETE, CREATE, ALTER, or DROP.

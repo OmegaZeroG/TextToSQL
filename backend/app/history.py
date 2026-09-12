@@ -2,7 +2,7 @@
 
 Deliberately not persisted to disk: this is a portfolio demo, not a
 multi-user product, and keeping it in-process avoids needing a second
-stateful service alongside the read-only analytical DuckDB file.
+stateful service beyond the Postgres database itself.
 """
 from datetime import datetime, timezone
 

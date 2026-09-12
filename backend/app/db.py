@@ -1,28 +1,30 @@
-import duckdb
 import pandas as pd
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
-from app.config import DB_PATH
+from app.config import DATABASE_URL
+
+_engine: Engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 
-def get_read_only_connection() -> duckdb.DuckDBPyConnection:
-    """DuckDB has no user-level GRANTs; read_only=True is the sandboxing
-    boundary — any write statement raises before touching the file."""
-    return duckdb.connect(DB_PATH, read_only=True)
+def get_engine() -> Engine:
+    return _engine
 
 
 def run_query(sql: str, row_limit: int) -> pd.DataFrame:
-    con = get_read_only_connection()
-    try:
-        result = con.execute(sql).fetch_df()
-        return result.head(row_limit)
-    finally:
-        con.close()
+    """SET TRANSACTION READ ONLY is the sandboxing boundary: even if a
+    write statement slips past the guardrail layer, Postgres itself
+    rejects it before anything is committed."""
+    with _engine.connect() as conn:
+        with conn.begin():
+            conn.execute(text("SET TRANSACTION READ ONLY"))
+            result = conn.execute(text(sql))
+            rows = result.fetchmany(row_limit)
+            columns = list(result.keys())
+    return pd.DataFrame(rows, columns=columns)
 
 
 def explain(sql: str) -> str:
-    con = get_read_only_connection()
-    try:
-        plan_rows = con.execute(f"EXPLAIN {sql}").fetchall()
-        return "\n".join(str(row) for row in plan_rows)
-    finally:
-        con.close()
+    with _engine.connect() as conn:
+        result = conn.execute(text(f"EXPLAIN {sql}"))
+        return "\n".join(str(row[0]) for row in result.fetchall())

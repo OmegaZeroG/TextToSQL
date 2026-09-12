@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "data" / "sample.duckdb"))
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/texttosql"
+)
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
 LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")

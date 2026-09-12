@@ -1,17 +1,22 @@
-"""Generates a synthetic e-commerce dataset in DuckDB for the text-to-SQL demo.
+"""Generates a synthetic e-commerce dataset in Postgres for the text-to-SQL demo.
 
 Schema: categories, products, customers, orders, order_items.
 Deliberately includes multi-table joins, aggregations, and a few realistic
-data quirks (NULL shipped_at for pending orders, discontinued products)
+data quirks (NULL shipped_date for pending orders, discontinued products)
 so generated SQL and guardrails have something real to work against.
+
+Drops and recreates the schema on every run — deterministic reset, safe to
+run on every container startup for a demo (see backend/entrypoint.sh).
 """
+import os
 import random
 from datetime import datetime, timedelta
-from pathlib import Path
 
-import duckdb
+from sqlalchemy import create_engine, text
 
-DB_PATH = Path(__file__).parent / "sample.duckdb"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/texttosql"
+)
 
 random.seed(42)
 
@@ -29,69 +34,70 @@ PRODUCT_NAMES = {
 CITIES = ["New York", "Austin", "Seattle", "Chicago", "Denver", "Miami", "Boston", "Phoenix"]
 STATUSES = ["completed", "shipped", "processing", "cancelled"]
 
+SCHEMA_SQL = """
+DROP TABLE IF EXISTS order_items CASCADE;
+DROP TABLE IF EXISTS orders CASCADE;
+DROP TABLE IF EXISTS products CASCADE;
+DROP TABLE IF EXISTS customers CASCADE;
+DROP TABLE IF EXISTS categories CASCADE;
+
+CREATE TABLE categories (
+    category_id INTEGER PRIMARY KEY,
+    name VARCHAR NOT NULL
+);
+
+CREATE TABLE products (
+    product_id INTEGER PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    category_id INTEGER REFERENCES categories(category_id),
+    price NUMERIC(10,2) NOT NULL,
+    is_discontinued BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE customers (
+    customer_id INTEGER PRIMARY KEY,
+    first_name VARCHAR NOT NULL,
+    last_name VARCHAR NOT NULL,
+    email VARCHAR NOT NULL,
+    city VARCHAR,
+    signup_date DATE NOT NULL
+);
+
+CREATE TABLE orders (
+    order_id INTEGER PRIMARY KEY,
+    customer_id INTEGER REFERENCES customers(customer_id),
+    order_date DATE NOT NULL,
+    shipped_date DATE,
+    status VARCHAR NOT NULL
+);
+
+CREATE TABLE order_items (
+    order_item_id INTEGER PRIMARY KEY,
+    order_id INTEGER REFERENCES orders(order_id),
+    product_id INTEGER REFERENCES products(product_id),
+    quantity INTEGER NOT NULL,
+    unit_price NUMERIC(10,2) NOT NULL
+);
+"""
+
 
 def build():
-    if DB_PATH.exists():
-        DB_PATH.unlink()
+    engine = create_engine(DATABASE_URL)
 
-    con = duckdb.connect(str(DB_PATH))
-
-    con.execute("""
-        CREATE TABLE categories (
-            category_id INTEGER PRIMARY KEY,
-            name VARCHAR NOT NULL
-        )
-    """)
-    con.execute("""
-        CREATE TABLE products (
-            product_id INTEGER PRIMARY KEY,
-            name VARCHAR NOT NULL,
-            category_id INTEGER REFERENCES categories(category_id),
-            price DECIMAL(10,2) NOT NULL,
-            is_discontinued BOOLEAN DEFAULT FALSE
-        )
-    """)
-    con.execute("""
-        CREATE TABLE customers (
-            customer_id INTEGER PRIMARY KEY,
-            first_name VARCHAR NOT NULL,
-            last_name VARCHAR NOT NULL,
-            email VARCHAR NOT NULL,
-            city VARCHAR,
-            signup_date DATE NOT NULL
-        )
-    """)
-    con.execute("""
-        CREATE TABLE orders (
-            order_id INTEGER PRIMARY KEY,
-            customer_id INTEGER REFERENCES customers(customer_id),
-            order_date DATE NOT NULL,
-            shipped_date DATE,
-            status VARCHAR NOT NULL
-        )
-    """)
-    con.execute("""
-        CREATE TABLE order_items (
-            order_item_id INTEGER PRIMARY KEY,
-            order_id INTEGER REFERENCES orders(order_id),
-            product_id INTEGER REFERENCES products(product_id),
-            quantity INTEGER NOT NULL,
-            unit_price DECIMAL(10,2) NOT NULL
-        )
-    """)
-
-    categories = [(i + 1, name) for i, name in enumerate(CATEGORIES)]
-    con.executemany("INSERT INTO categories VALUES (?, ?)", categories)
+    categories = [{"id": i + 1, "name": name} for i, name in enumerate(CATEGORIES)]
 
     products = []
     pid = 1
-    for cat_id, cat_name in categories:
-        for name in PRODUCT_NAMES[cat_name]:
-            price = round(random.uniform(8, 400), 2)
-            discontinued = random.random() < 0.08
-            products.append((pid, name, cat_id, price, discontinued))
+    for cat in categories:
+        for name in PRODUCT_NAMES[cat["name"]]:
+            products.append({
+                "id": pid,
+                "name": name,
+                "category_id": cat["id"],
+                "price": round(random.uniform(8, 400), 2),
+                "discontinued": random.random() < 0.08,
+            })
             pid += 1
-    con.executemany("INSERT INTO products VALUES (?, ?, ?, ?, ?)", products)
 
     first_names = ["Alex", "Jordan", "Sam", "Taylor", "Morgan", "Casey", "Riley", "Jamie", "Priya", "Wei", "Fatima", "Liam"]
     last_names = ["Smith", "Johnson", "Lee", "Garcia", "Brown", "Patel", "Kim", "Nguyen", "Davis", "Miller"]
@@ -100,11 +106,11 @@ def build():
     for cid in range(1, 121):
         fn, ln = random.choice(first_names), random.choice(last_names)
         signup = datetime(2023, 1, 1) + timedelta(days=random.randint(0, 700))
-        customers.append((
-            cid, fn, ln, f"{fn.lower()}.{ln.lower()}{cid}@example.com",
-            random.choice(CITIES), signup.date(),
-        ))
-    con.executemany("INSERT INTO customers VALUES (?, ?, ?, ?, ?, ?)", customers)
+        customers.append({
+            "id": cid, "first_name": fn, "last_name": ln,
+            "email": f"{fn.lower()}.{ln.lower()}{cid}@example.com",
+            "city": random.choice(CITIES), "signup_date": signup.date(),
+        })
 
     orders = []
     order_items = []
@@ -117,20 +123,39 @@ def build():
         shipped_date = None
         if status in ("completed", "shipped"):
             shipped_date = (order_date + timedelta(days=random.randint(1, 6))).date()
-        orders.append((order_id, customer_id, order_date.date(), shipped_date, status))
+        orders.append({
+            "id": order_id, "customer_id": customer_id, "order_date": order_date.date(),
+            "shipped_date": shipped_date, "status": status,
+        })
 
         for _ in range(random.randint(1, 4)):
             product = random.choice(products)
             qty = random.randint(1, 3)
-            order_items.append((item_id, order_id, product[0], qty, product[3]))
+            order_items.append({
+                "id": item_id, "order_id": order_id, "product_id": product["id"],
+                "quantity": qty, "unit_price": product["price"],
+            })
             item_id += 1
         order_id += 1
 
-    con.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", orders)
-    con.executemany("INSERT INTO order_items VALUES (?, ?, ?, ?, ?)", order_items)
+    with engine.begin() as conn:
+        conn.execute(text(SCHEMA_SQL))
 
-    con.close()
-    print(f"Seeded {DB_PATH} with {len(customers)} customers, {len(products)} products, "
+        conn.execute(text("INSERT INTO categories VALUES (:id, :name)"), categories)
+        conn.execute(text(
+            "INSERT INTO products VALUES (:id, :name, :category_id, :price, :discontinued)"
+        ), products)
+        conn.execute(text(
+            "INSERT INTO customers VALUES (:id, :first_name, :last_name, :email, :city, :signup_date)"
+        ), customers)
+        conn.execute(text(
+            "INSERT INTO orders VALUES (:id, :customer_id, :order_date, :shipped_date, :status)"
+        ), orders)
+        conn.execute(text(
+            "INSERT INTO order_items VALUES (:id, :order_id, :product_id, :quantity, :unit_price)"
+        ), order_items)
+
+    print(f"Seeded Postgres with {len(customers)} customers, {len(products)} products, "
           f"{len(orders)} orders, {len(order_items)} order items.")
 
 
