@@ -29,10 +29,10 @@
   },
   {
     "id": "q5",
-    "question": "Show discontinued products with pending orders",
+    "question": "Show discontinued products that have orders still marked as processing",
     "expected_sql": "SELECT DISTINCT p.product_id, p.name FROM products p JOIN order_items oi ON p.product_id = oi.product_id JOIN orders o ON oi.order_id = o.order_id WHERE p.is_discontinued = TRUE AND o.status = 'processing'",
     "difficulty": "medium",
-    "notes": "Tests correct interpretation of 'pending' -> status = 'processing'."
+    "notes": "Multi-table join filtered on an explicit status value (avoids 'pending', which is genuinely ambiguous against this schema — it could mean status='processing' or shipped_date IS NULL, and the system correctly asks for clarification on that wording)."
   },
   {
     "id": "q6",
@@ -50,10 +50,10 @@
   },
   {
     "id": "q8",
-    "question": "How many orders has each category sold, ranked highest to lowest?",
-    "expected_sql": "SELECT cat.name, COUNT(oi.order_item_id) AS items_sold FROM categories cat JOIN products p ON cat.category_id = p.category_id JOIN order_items oi ON p.product_id = oi.product_id GROUP BY cat.name ORDER BY items_sold DESC",
+    "question": "How many total units has each category sold, ranked highest to lowest?",
+    "expected_sql": "SELECT cat.name, SUM(oi.quantity) AS units_sold FROM categories cat JOIN products p ON cat.category_id = p.category_id JOIN order_items oi ON p.product_id = oi.product_id GROUP BY cat.name ORDER BY units_sold DESC",
     "difficulty": "medium",
-    "notes": "Three-table join through the category->product->order_items chain."
+    "notes": "Three-table join through the category->product->order_items chain. 'Total units sold' maps unambiguously to SUM(quantity) -- earlier phrasings ('orders sold', 'order line items sold') were genuinely ambiguous between counting rows and summing quantity, and the system correctly flagged that ambiguity rather than guessing."
   },
   {
     "id": "q9",

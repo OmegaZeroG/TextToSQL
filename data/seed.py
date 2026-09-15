@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 
 DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/texttosql"
+    "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5433/texttosql"
 )
 
 random.seed(42)
@@ -156,7 +156,7 @@ def build():
         ), order_items)
 
     print(f"Seeded Postgres with {len(customers)} customers, {len(products)} products, "
-          f"{len(orders)} orders, {len(order_items)} order items.")
+            f"{len(orders)} orders, {len(order_items)} order items.")
 
 
 if __name__ == "__main__":

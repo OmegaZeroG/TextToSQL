@@ -7,11 +7,11 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/texttosql"
+    "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5433/texttosql"
 )
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

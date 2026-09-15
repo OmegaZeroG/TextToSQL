@@ -30,7 +30,7 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/texttosql
       LLM_PROVIDER: groq
-      LLM_MODEL: llama-3.3-70b-versatile
+      LLM_MODEL: openai/gpt-oss-120b
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 
     steps:

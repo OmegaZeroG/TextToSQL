@@ -6,7 +6,10 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: texttosql
     ports:
-      - "5432:5432"
+      # Host-side 5433: avoids colliding with a native Postgres install on
+      # the default 5432 (containers still talk to each other over the
+      # internal docker network on 5432 regardless of this mapping).
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
