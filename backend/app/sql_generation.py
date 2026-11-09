@@ -63,4 +63,10 @@ def generate_sql(llm: LLMProvider, question: str, tables: list[TableInfo]) -> di
     system_prompt = SYSTEM_PROMPT.format(schema=schema_text, examples=DEFAULT_EXAMPLES)
 
     raw = llm.complete(system_prompt, f"Question: {question}", json_mode=True)
-    return _extract_json(raw)
+    parsed = _extract_json(raw)
+
+    if not isinstance(parsed, dict):
+        raise ValueError("model output is not a JSON object")
+    if not parsed.get("ambiguous") and not isinstance(parsed.get("sql"), str):
+        raise ValueError("model output is missing a 'sql' string")
+    return parsed

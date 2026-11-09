@@ -87,6 +87,22 @@ Or run the whole stack with Docker Compose:
 docker-compose up --build
 ```
 
+## Tests
+
+Two layers, because they answer different questions:
+
+| Layer | Needs | Answers |
+|---|---|---|
+| `pytest` (backend/tests) | nothing — LLM and DB are faked | Does the code do what it claims, deterministically? Guardrails, confidence math, prompt construction, every API failure mode, the eval harness's own comparison logic |
+| Golden-query eval | live LLM + seeded Postgres | How *accurate* is the model on real questions? |
+
+```bash
+pip install -r backend/requirements-dev.txt
+cd backend && pytest
+```
+
+`tests/test_db_integration.py` runs against whatever `DATABASE_URL` points at and skips itself when no database is reachable. It proves the database refuses writes even when the guardrail layer is bypassed entirely. CI runs everything on every push and PR; the live-LLM eval additionally runs on PRs.
+
 ## Running the eval suite
 
 ```bash
@@ -106,10 +122,9 @@ request instead of a guess.
 
 **Backend → Render**
 1. Push this repo to GitHub.
-2. On [Render](https://render.com), New → Web Service → connect the repo.
-3. Environment: Docker. Dockerfile path: `backend/Dockerfile`. Docker build context: repo root.
-4. Add environment variables from `.env.example`: your Neon `DATABASE_URL`, `LLM_PROVIDER=groq`, and `GROQ_API_KEY`.
-5. Free tier deploys, sleeps after 15 minutes idle, and wakes on the next request (~30s cold start). The container reseeds the database on every boot, so it's always in a known-good state.
+2. On [Render](https://render.com), New → Blueprint → connect the repo. It reads [`render.yaml`](render.yaml) (Docker runtime, `backend/Dockerfile`, `/health` check, free plan).
+3. When prompted, supply the two secrets: your Neon `DATABASE_URL` and `GROQ_API_KEY`.
+4. Free tier sleeps after 15 minutes idle and wakes on the next request (~30s cold start). On boot the container seeds the database only if it's empty (`seed.py --if-empty`), so wake-ups stay fast and data isn't dropped under live traffic.
 
 **Frontend → Vercel**
 1. On [vercel.com](https://vercel.com), New Project → import this repo, root directory `frontend`.

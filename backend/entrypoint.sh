@@ -21,6 +21,6 @@ else:
     sys.exit("Could not reach the database after 30s")
 PYEOF
 
-python data/seed.py
+python data/seed.py --if-empty
 
 exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"

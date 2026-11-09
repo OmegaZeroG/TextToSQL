@@ -5,11 +5,13 @@ Deliberately includes multi-table joins, aggregations, and a few realistic
 data quirks (NULL shipped_date for pending orders, discontinued products)
 so generated SQL and guardrails have something real to work against.
 
-Drops and recreates the schema on every run — deterministic reset, safe to
-run on every container startup for a demo (see backend/entrypoint.sh).
+Drops and recreates the schema on every run — deterministic reset. Pass
+--if-empty to skip when data already exists (used by backend/entrypoint.sh
+so cold starts don't re-seed).
 """
 import os
 import random
+import sys
 from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine, text
@@ -159,5 +161,17 @@ def build():
             f"{len(orders)} orders, {len(order_items)} order items.")
 
 
+def is_seeded() -> bool:
+    engine = create_engine(DATABASE_URL)
+    with engine.connect() as conn:
+        exists = conn.execute(text("SELECT to_regclass('public.order_items')")).scalar()
+        if exists is None:
+            return False
+        return conn.execute(text("SELECT COUNT(*) FROM order_items")).scalar() > 0
+
+
 if __name__ == "__main__":
-    build()
+    if "--if-empty" in sys.argv and is_seeded():
+        print("Database already seeded, skipping.")
+    else:
+        build()
