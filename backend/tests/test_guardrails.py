@@ -86,7 +86,32 @@ def test_row_limit_is_configurable(monkeypatch):
     assert check_sql("SELECT * FROM orders").sql.endswith("LIMIT 25")
 
 
-DEPTH_3 = "SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1) a) b) c"
+class TestWhenNotExecuting:
+    """for_execution=False: SQL is only generated for display, so the cost limits
+    (row cap, nesting depth) don't apply, but the safety rules must."""
+
+    def test_no_row_limit_is_injected(self):
+        assert check_sql("SELECT * FROM orders;", for_execution=False).sql == "SELECT * FROM orders"
+
+    def test_an_existing_limit_is_left_alone(self):
+        assert check_sql("SELECT * FROM orders LIMIT 50000", for_execution=False).sql == "SELECT * FROM orders LIMIT 50000"
+
+    def test_deep_nesting_is_allowed(self):
+        assert check_sql("SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1) a) b) c) d", for_execution=False).allowed
+
+    @pytest.mark.parametrize("sql", [
+        "DELETE FROM orders",
+        "DROP TABLE orders",
+        "UPDATE orders SET status = 'x'",
+        "SELECT 1; DROP TABLE orders",
+        "WITH d AS (DELETE FROM orders RETURNING *) SELECT * FROM d",
+        "",
+    ])
+    def test_safety_rules_still_apply(self, sql):
+        assert not check_sql(sql, for_execution=False).allowed
+
+
+DEPTH_3 ="SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1) a) b) c"
 DEPTH_4 = "SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1) a) b) c) d"
 
 

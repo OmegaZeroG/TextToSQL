@@ -64,9 +64,9 @@
   },
   {
     "id": "q10",
-    "question": "What's the busiest order month across all time?",
-    "expected_sql": "SELECT date_trunc('month', order_date) AS month, COUNT(*) AS order_count FROM orders GROUP BY month ORDER BY order_count DESC LIMIT 1",
+    "question": "Which individual month (for example 2024-03) had the most orders overall?",
+    "expected_sql": "SELECT date_trunc('month', order_date) AS month FROM orders GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1",
     "difficulty": "hard",
-    "notes": "Requires date truncation/grouping by month, a common syntax variance point across dialects."
+    "notes": "Requires date truncation/grouping by month, a common syntax variance point across dialects. Reworded from 'busiest order month across all time': that phrasing is genuinely ambiguous (best year-month vs. best calendar month pooled across years) and the model asked for clarification on roughly half of runs, committed code included. The golden answer is just the month, so a response that also returns the count still matches."
   }
 ]

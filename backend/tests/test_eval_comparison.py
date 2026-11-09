@@ -73,3 +73,25 @@ def test_duplicate_rows_are_counted_not_collapsed():
 
 def test_a_row_missing_an_expected_value_does_not_match():
     assert not rows_match(["a"], [["x"]], expected(["a", "b"], [["x", "y"]]))
+
+
+def test_utc_timestamp_string_from_the_api_matches_a_tz_aware_database_value():
+    """The API serialises tz-aware datetimes as '...T00:00:00Z'. Regression: the
+    normaliser didn't recognise the Z suffix, so a correct raw-timestamp answer failed."""
+    month = datetime(2024, 12, 1, tzinfo=timezone.utc)
+    assert rows_match(["m", "n"], [["2024-12-01T00:00:00Z", 31]], expected(["m", "n"], [[month, 31]]))
+
+
+def test_timestamp_with_a_utc_offset_is_converted_before_comparing():
+    month = datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc)
+    assert rows_match(["m"], [["2024-12-01T05:30:00+05:30"]], expected(["m"], [[month]]))
+
+
+def test_fractional_seconds_are_accepted():
+    month = datetime(2024, 12, 1, 0, 0, 0, 500000, tzinfo=timezone.utc)
+    assert rows_match(["m"], [["2024-12-01T00:00:00.5Z"]], expected(["m"], [[month]]))
+
+
+def test_a_different_instant_does_not_match():
+    month = datetime(2024, 12, 1, tzinfo=timezone.utc)
+    assert not rows_match(["m"], [["2024-11-01T00:00:00Z"]], expected(["m"], [[month]]))

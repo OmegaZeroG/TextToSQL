@@ -31,7 +31,20 @@ def gen(sql="SELECT COUNT(*) AS n FROM orders", **overrides):
     return json.dumps(payload)
 
 
-BACK_TRANSLATION = json.dumps({"back_translated_question": "How many orders are there?"})
+def no_schema_gen(sql="SELECT COUNT(*) FROM customers", **overrides):
+    """What the model returns when the user gave no schema."""
+    payload = {
+        "sql": sql,
+        "explanation": "Counts customers.",
+        "confidence": 5,
+        "assumed_schema": "CREATE TABLE customers (id INT PRIMARY KEY, name TEXT);",
+        "assumptions": ["Assumed a customers table with id and name."],
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+BACK_TRANSLATION =json.dumps({"back_translated_question": "How many orders are there?"})
 
 
 def alignment(score):

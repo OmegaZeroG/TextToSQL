@@ -2,6 +2,168 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-slate-950 text-slate-100;
+/*
+ * Design tokens, lifted from the plainquery design: a warm off-white page, deep
+ * green primary, DM Sans / Instrument Serif / IBM Plex Mono. Each value is the
+ * oklch channel triple (L C H) so Tailwind can add opacity: bg-primary/10.
+ */
+:root {
+  --background: 97.8% 0.007 90;
+  --foreground: 23% 0.018 257;
+  --card: 99.8% 0.003 90;
+  --border: 89% 0.012 250;
+  --input: 88% 0.014 250;
+  --muted: 95% 0.008 80;
+  --muted-foreground: 51% 0.02 250;
+  --primary: 42% 0.11 164;
+  --primary-foreground: 98.5% 0.01 145;
+  --secondary: 95% 0.015 165;
+  --secondary-foreground: 34% 0.07 164;
+  --accent: 93% 0.025 160;
+  --accent-foreground: 30% 0.07 164;
+  --destructive: 57.7% 0.245 27.3;
+  --warning: 72% 0.16 72;
+  --warning-foreground: 44% 0.1 62;
+  --ring: 58% 0.1 164;
+
+  --syn-keyword: 42% 0.11 164;
+  --syn-string: 52% 0.13 52;
+  --syn-number: 48% 0.12 250;
+  --syn-comment: 62% 0.02 250;
+  --syn-function: 40% 0.1 300;
+
+  color-scheme: light;
+}
+
+.dark {
+  --background: 17% 0.012 165;
+  --foreground: 95% 0.008 90;
+  --card: 21% 0.014 165;
+  --border: 30% 0.016 165;
+  --input: 33% 0.016 165;
+  --muted: 25% 0.012 165;
+  --muted-foreground: 70% 0.02 165;
+  --primary: 70% 0.14 163;
+  --primary-foreground: 17% 0.03 165;
+  --secondary: 27% 0.025 165;
+  --secondary-foreground: 88% 0.05 165;
+  --accent: 28% 0.045 165;
+  --accent-foreground: 88% 0.08 160;
+  --destructive: 70% 0.19 25;
+  --warning: 80% 0.15 85;
+  --warning-foreground: 86% 0.1 85;
+  --ring: 65% 0.12 163;
+
+  --syn-keyword: 75% 0.14 163;
+  --syn-string: 80% 0.12 70;
+  --syn-number: 76% 0.11 240;
+  --syn-comment: 62% 0.02 165;
+  --syn-function: 78% 0.11 310;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  /* 16px inputs stop iOS Safari from zooming the page when a field is focused. */
+  textarea,
+  input,
+  select {
+    font-size: 16px;
+  }
+  @media (min-width: 640px) {
+    textarea,
+    input,
+    select {
+      font-size: 14px;
+    }
+  }
+
+  ::selection {
+    background: oklch(var(--primary) / 0.25);
+  }
+
+  :focus-visible {
+    outline: 2px solid oklch(var(--ring));
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* Shimmering placeholder block used by every skeleton. */
+  .skeleton {
+    position: relative;
+    overflow: hidden;
+    background-color: oklch(var(--muted));
+  }
+  .skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      oklch(var(--foreground) / 0.07),
+      transparent
+    );
+    animation: shimmer 1.6s ease-in-out infinite;
+  }
+
+  /* Faint dot grid for empty states. */
+  .bg-dots {
+    background-image: radial-gradient(oklch(var(--foreground) / 0.13) 1px, transparent 1px);
+    background-size: 14px 14px;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(var(--border)) transparent;
+  }
+}
+
+/* Added to <html> for a moment while the theme flips, so every colour fades together
+   instead of the page background lagging behind the cards. */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition:
+    background-color 0.28s ease,
+    color 0.28s ease,
+    border-color 0.28s ease,
+    fill 0.28s ease,
+    stroke 0.28s ease !important;
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  .touch-manipulation {
+    touch-action: manipulation;
+  }
+}
+
+/* Anyone who asks their OS for less motion gets none: the skeleton and spinner
+   freeze, entrance animations and transitions collapse to an instant change. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

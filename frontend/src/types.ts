@@ -1,44 +1,91 @@
-export interface ConfidenceBreakdown {
+export interface Dialect {
+  id: string;
+  label: string;
+}
+
+export interface SchemaColumn {
+  name: string;
+  type: string;
+  // Optional: schemas saved before keys were reported don't have them.
+  primary_key?: boolean;
+  foreign_key?: string | null;
+}
+
+export interface SchemaTable {
+  name: string;
+  columns: SchemaColumn[];
+}
+
+export interface SchemaAnalyzeResponse {
+  dialect: string;
+  source: "ddl" | "text";
+  ddl: string;
+  tables: SchemaTable[];
+}
+
+export interface SchemaUpdateResponse extends SchemaAnalyzeResponse {
+  changes: string[];
+}
+
+/** What is kept in this browser's localStorage. */
+export interface SavedSchema {
+  ddl: string;
+  dialect: string;
+  tables: SchemaTable[];
+  savedAt: number;
+}
+
+export interface GenerateConfidence {
   syntax_valid: boolean;
   back_translation_alignment: number;
-  result_sanity_passed: boolean;
+  schema_check_passed: boolean;
   overall: number;
 }
 
-export interface QueryResponse {
+export interface GenerateResponse {
   question: string;
+  dialect: string;
   sql: string;
   explanation: string;
-  columns: string[];
-  rows: unknown[][];
-  row_count: number;
-  execution_time_ms: number;
-  confidence: ConfidenceBreakdown;
+  tables_used: string[];
+  confidence: GenerateConfidence;
   warnings: string[];
   guardrail_blocked: boolean;
   block_reason: string | null;
+  schema_provided: boolean;
+  assumed_schema: string | null;
+  assumptions: string[];
 }
 
-export interface ClarificationDetail {
+export interface Clarification {
+  kind: "ambiguous" | "unanswerable";
   message: string;
   interpretations: string[];
 }
 
+export interface Status {
+  kind: "success" | "error";
+  message: string;
+  details?: string[];
+}
+
+/** A past question, kept in this browser. */
 export interface HistoryEntry {
-  id: number;
+  id: string;
   question: string;
   sql: string;
-  row_count: number;
+  dialect: string;
   confidence: number;
-  created_at: string;
+  schemaProvided: boolean;
+  createdAt: number;
 }
 
-export interface SchemaResponse {
-  schema: string;
-  tables: string[];
-}
+export type ApiResult<T> = { ok: true; data: T } | { ok: false; message: string; cancelled?: boolean };
 
-export type QueryOutcome =
-  | { kind: "success"; data: QueryResponse }
-  | { kind: "clarification"; data: ClarificationDetail }
-  | { kind: "error"; message: string };
+export type GenerateOutcome =
+  | { kind: "success"; data: GenerateResponse }
+  | { kind: "clarification"; data: Clarification }
+  | { kind: "error"; message: string }
+  | { kind: "cancelled" };
+
+export type ServerState = "checking" | "online" | "waking" | "offline";

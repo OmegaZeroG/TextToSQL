@@ -1,152 +1,327 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { fetchSchema, submitQuery } from "./api";
-import ConfidenceBadge from "./components/ConfidenceBadge";
+import { FALLBACK_DIALECTS, analyzeSchema, fetchDialects, generateSql, updateSchema } from "./api";
+import Header from "./components/Header";
 import HistoryList from "./components/HistoryList";
-import QueryForm from "./components/QueryForm";
-import ResultsTable from "./components/ResultsTable";
-import SchemaPanel from "./components/SchemaPanel";
-import type { ClarificationDetail, QueryResponse } from "./types";
+import QuestionCard from "./components/QuestionCard";
+import ResultCard from "./components/ResultCard";
+import SchemaCard from "./components/SchemaCard";
+import { useServerStatus } from "./hooks/useServerStatus";
+import { useTheme } from "./hooks/useTheme";
+import { plural } from "./lib/format";
+import { suggestQuestions } from "./lib/suggestions";
+import {
+  MAX_HISTORY,
+  clearStoredHistory,
+  clearStoredSchema,
+  loadDialect,
+  loadHistory,
+  loadSchema,
+  storeDialect,
+  storeHistory,
+  storeSchema,
+} from "./storage";
+import type {
+  Dialect,
+  GenerateOutcome,
+  HistoryEntry,
+  SavedSchema,
+  SchemaTable,
+  Status,
+} from "./types";
+
+const STORAGE_WARNING = "This browser blocked storage, so the schema will be forgotten when you refresh.";
+
+function countColumns(tables: SchemaTable[]): number {
+  return tables.reduce((sum, t) => sum + t.columns.length, 0);
+}
+
+function newId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export default function App() {
+  const { theme, toggle: toggleTheme } = useTheme();
+  const server = useServerStatus();
+
+  const [dialects, setDialects] = useState<Dialect[]>(FALLBACK_DIALECTS);
+  const [schema, setSchema] = useState<SavedSchema | null>(() => loadSchema());
+  const [dialectId, setDialectId] = useState<string>(() => loadSchema()?.dialect ?? loadDialect() ?? "postgres");
+  const [draft, setDraft] = useState("");
+  const [schemaBusy, setSchemaBusy] = useState(false);
+  const [schemaStatus, setSchemaStatus] = useState<Status | null>(null);
+
   const [question, setQuestion] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [outcome, setOutcome] = useState<GenerateOutcome | null>(null);
+  const [resultKey, setResultKey] = useState(0);
+  const [announcement, setAnnouncement] = useState("");
+  const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
 
-  const [schema, setSchema] = useState<string | null>(null);
-  const [schemaLoading, setSchemaLoading] = useState(true);
-  const [schemaError, setSchemaError] = useState<string | null>(null);
-
-  const [result, setResult] = useState<QueryResponse | null>(null);
-  const [clarification, setClarification] = useState<ClarificationDetail | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [history, setHistory] = useState<QueryResponse[]>([]);
+  // Each request gets an id; a response is applied only if it is still the latest,
+  // so a slow, stopped or superseded request can never overwrite a newer result.
+  const requestId = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetchSchema()
-      .then((res) => setSchema(res.schema))
-      .catch((err) => setSchemaError(err instanceof Error ? err.message : "Failed to load schema"))
-      .finally(() => setSchemaLoading(false));
+    fetchDialects().then(setDialects);
   }, []);
 
-  async function handleAsk(q: string) {
-    setLoading(true);
-    setResult(null);
-    setClarification(null);
-    setErrorMessage(null);
+  useEffect(() => {
+    storeHistory(history);
+  }, [history]);
 
-    const outcome = await submitQuery(q);
+  const suggestions = useMemo(() => suggestQuestions(schema?.tables), [schema]);
 
-    if (outcome.kind === "success") {
-      setResult(outcome.data);
-      setHistory((prev) => [outcome.data, ...prev].slice(0, 10));
-    } else if (outcome.kind === "clarification") {
-      setClarification(outcome.data);
-    } else {
-      setErrorMessage(outcome.message);
-    }
-
-    setLoading(false);
+  function handleDialectChange(id: string) {
+    setDialectId(id);
+    storeDialect(id);
   }
 
-  const showEmptyState = !loading && !result && !clarification && !errorMessage;
+  /** Reads a schema (DDL, plain English, or a list) and saves it in this browser. */
+  async function saveSchemaText(text: string): Promise<SavedSchema | null> {
+    setSchemaBusy(true);
+    setSchemaStatus(null);
+    const result = await analyzeSchema(text, dialectId);
+    setSchemaBusy(false);
+
+    if (!result.ok) {
+      setSchemaStatus({ kind: "error", message: result.message });
+      return null;
+    }
+    server.markOnline();
+
+    const saved: SavedSchema = {
+      ddl: result.data.ddl,
+      dialect: result.data.dialect,
+      tables: result.data.tables,
+      savedAt: Date.now(),
+    };
+    const stored = storeSchema(saved);
+    setSchema(saved);
+    setDialectId(saved.dialect);
+    setDraft("");
+
+    const details: string[] = [];
+    if (result.data.source === "text") details.push("Read from your description. Check the tables below are what you meant.");
+    if (!stored) details.push(STORAGE_WARNING);
+    setSchemaStatus({
+      kind: "success",
+      message: `Schema saved: ${plural(saved.tables.length, "table")}, ${plural(countColumns(saved.tables), "column")}.`,
+      details,
+    });
+    return saved;
+  }
+
+  async function handleApplyChange(changeText: string): Promise<boolean> {
+    if (!schema) return false;
+    setSchemaBusy(true);
+    setSchemaStatus(null);
+    const result = await updateSchema(schema.ddl, changeText, schema.dialect);
+    setSchemaBusy(false);
+
+    if (!result.ok) {
+      setSchemaStatus({ kind: "error", message: result.message });
+      return false;
+    }
+
+    const saved: SavedSchema = {
+      ddl: result.data.ddl,
+      dialect: result.data.dialect,
+      tables: result.data.tables,
+      savedAt: Date.now(),
+    };
+    const stored = storeSchema(saved);
+    setSchema(saved);
+    setSchemaStatus({
+      kind: "success",
+      message: "Schema updated.",
+      details: stored ? result.data.changes : [...result.data.changes, STORAGE_WARNING],
+    });
+    return true;
+  }
+
+  function handleReset() {
+    clearStoredSchema();
+    setSchema(null);
+    setSchemaStatus({ kind: "success", message: "Schema reset. It was removed from this browser." });
+  }
+
+  function scrollToResult() {
+    if (!window.matchMedia("(max-width: 1023px)").matches) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    requestAnimationFrame(() =>
+      resultRef.current?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" }),
+    );
+  }
+
+  async function handleSubmit() {
+    if (generating || schemaBusy) return;
+    const trimmedQuestion = question.trim();
+    const trimmedDraft = draft.trim();
+
+    let active = schema;
+    if (!active && trimmedDraft) {
+      active = await saveSchemaText(trimmedDraft);
+      if (!active) return;
+    }
+    if (!trimmedQuestion) return; // schema only: it has been saved, nothing to generate
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const id = ++requestId.current;
+
+    setGenerating(true);
+    setOutcome(null);
+    setAnnouncement("Generating SQL.");
+    const result = await generateSql(
+      trimmedQuestion,
+      active?.ddl ?? null,
+      active?.dialect ?? dialectId,
+      controller.signal,
+    );
+    if (id !== requestId.current) return; // stopped or superseded
+
+    setGenerating(false);
+    if (result.kind === "cancelled") return;
+
+    setOutcome(result);
+    setResultKey((key) => key + 1);
+    if (result.kind === "success") {
+      server.markOnline();
+      const data = result.data;
+      if (data.guardrail_blocked) {
+        setAnnouncement("That request was blocked by the guardrails.");
+      } else {
+        setAnnouncement(`SQL generated. Confidence ${Math.round(data.confidence.overall * 100)} percent.`);
+        const entry: HistoryEntry = {
+          id: newId(),
+          question: data.question,
+          sql: data.sql,
+          dialect: data.dialect,
+          confidence: data.confidence.overall,
+          schemaProvided: data.schema_provided,
+          createdAt: Date.now(),
+        };
+        setHistory((previous) => [entry, ...previous].slice(0, MAX_HISTORY));
+      }
+    } else if (result.kind === "clarification") {
+      setAnnouncement(result.data.message);
+    } else {
+      setAnnouncement("Something went wrong.");
+    }
+    scrollToResult();
+  }
+
+  function handleCancel() {
+    requestId.current += 1;
+    abortRef.current?.abort();
+    setGenerating(false);
+    setOutcome(null);
+    setAnnouncement("Stopped.");
+  }
+
+  function handleUseHistory(entry: HistoryEntry) {
+    setQuestion(entry.question);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    document.getElementById("question")?.focus({ preventScroll: true });
+  }
+
+  function handleClearHistory() {
+    setHistory([]);
+    clearStoredHistory();
+  }
+
+  const activeDialectId = schema?.dialect ?? dialectId;
+  const dialectLabel = dialects.find((d) => d.id === activeDialectId)?.label ?? activeDialectId;
+  const hasQuestion = question.trim().length > 0;
+  const hasDraft = !schema && draft.trim().length > 0;
 
   return (
-    <div className="flex min-h-screen flex-col md:h-screen md:flex-row">
-      <SchemaPanel
-        schema={schema}
-        loading={schemaLoading}
-        error={schemaError}
-        activeExample={question}
-        onPickExample={(q) => {
-          setQuestion(q);
-          handleAsk(q);
-        }}
-      />
+    <div className="min-h-dvh">
+      <a
+        href="#main"
+        className="sr-only z-50 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground focus:not-sr-only focus:fixed focus:left-4 focus:top-4"
+      >
+        Skip to content
+      </a>
+      <Header server={server.state} onRetry={server.retry} theme={theme} onToggleTheme={toggleTheme} />
 
-      <main className="flex flex-1 flex-col gap-6 overflow-y-auto p-6">
-        <header>
-          <h1 className="text-xl font-semibold text-white">🗄️ Text-to-SQL with Guardrails</h1>
-          <p className="mt-1 text-sm text-slate-400">
-            Ask a question in plain English. The generated SQL runs read-only, is checked for
-            unsafe statements, and comes with a confidence score based on hallucination checks.
+      <main id="main" className="mx-auto max-w-6xl px-4 pb-safe pt-8 sm:px-6 sm:pt-12">
+        <section className="mb-8 max-w-3xl animate-rise-in sm:mb-10">
+          <p className="mb-3 flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-primary">
+            <span aria-hidden="true">&lt;/&gt;</span>
+            A quieter way to query
           </p>
-        </header>
-
-        <QueryForm value={question} onChange={setQuestion} onSubmit={handleAsk} loading={loading} />
-
-        {loading && (
-          <div className="space-y-3" aria-label="Generating SQL">
-            <div className="h-4 w-2/3 animate-pulse rounded bg-slate-800" />
-            <div className="h-20 w-full animate-pulse rounded-lg bg-slate-900" />
-            <div className="h-32 w-full animate-pulse rounded-lg bg-slate-900" />
-          </div>
-        )}
-
-        {showEmptyState && (
-          <p className="text-sm text-slate-500">
-            Pick a question from the sidebar or type your own to get started.
+          <h1 className="font-serif text-[2.6rem] leading-[1.04] sm:text-5xl lg:text-6xl">
+            Words in. <span className="text-primary">SQL out.</span>
+          </h1>
+          <p className="mt-4 max-w-xl text-[15px] text-muted-foreground sm:text-base">
+            Ask a question about your data. Add your schema for a query shaped around your tables.
           </p>
-        )}
+        </section>
 
-        {errorMessage && (
-          <div className="rounded-lg border border-red-800 bg-red-950/50 p-4 text-sm text-red-300">
-            {errorMessage}
+        {/* One column on phones (question first, schema second); on desktop the schema sits beside the rest. */}
+        <div className="grid gap-5 lg:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] lg:gap-6">
+          <QuestionCard
+            className="order-1 animate-rise-in [animation-delay:90ms] lg:col-start-2 lg:row-start-1"
+            question={question}
+            onQuestionChange={setQuestion}
+            onSubmit={handleSubmit}
+            onCancel={handleCancel}
+            generating={generating}
+            busy={schemaBusy}
+            canSubmit={hasQuestion || hasDraft}
+            hasSchema={schema !== null}
+            hasSchemaDraft={hasDraft}
+            dialects={dialects}
+            dialectId={activeDialectId}
+            dialectLocked={schema !== null}
+            onDialectChange={handleDialectChange}
+            suggestions={suggestions}
+          />
+
+          <SchemaCard
+            className="order-2 animate-rise-in [animation-delay:150ms] lg:sticky lg:top-20 lg:col-start-1 lg:row-span-3 lg:row-start-1 lg:self-start"
+            schema={schema}
+            dialectLabel={dialectLabel}
+            draft={draft}
+            onDraftChange={setDraft}
+            busy={schemaBusy}
+            status={schemaStatus}
+            onSave={() => void saveSchemaText(draft.trim())}
+            onApplyChange={handleApplyChange}
+            onReset={handleReset}
+            onDismissStatus={() => setSchemaStatus(null)}
+            onFileError={(message) => setSchemaStatus({ kind: "error", message })}
+          />
+
+          <div ref={resultRef} className="order-3 scroll-mt-20 lg:col-start-2 lg:row-start-2">
+            <ResultCard
+              outcome={outcome}
+              loading={generating}
+              hasSchema={schema !== null}
+              dialects={dialects}
+              canAdoptSchema={schema === null}
+              adoptingSchema={schemaBusy}
+              onAdoptSchema={(ddl) => void saveSchemaText(ddl)}
+              onCancel={handleCancel}
+              onRetry={handleSubmit}
+              resultKey={resultKey}
+            />
           </div>
-        )}
 
-        {clarification && (
-          <div className="rounded-lg border border-amber-800 bg-amber-950/30 p-4">
-            <p className="text-sm font-medium text-amber-300">{clarification.message}</p>
-            <ul className="mt-2 list-inside list-disc text-sm text-amber-200/80">
-              {clarification.interpretations.map((interp) => (
-                <li key={interp}>{interp}</li>
-              ))}
-            </ul>
+          <div className="order-4 lg:col-start-2 lg:row-start-3">
+            <HistoryList items={history} dialects={dialects} onUse={handleUseHistory} onClear={handleClearHistory} />
           </div>
-        )}
-
-        {result?.guardrail_blocked && (
-          <div className="rounded-lg border border-red-800 bg-red-950/50 p-4">
-            <p className="text-sm font-medium text-red-300">🚫 Blocked by guardrails</p>
-            <p className="mt-1 text-sm text-red-200/80">{result.block_reason}</p>
-            <pre className="mt-3 whitespace-pre-wrap rounded bg-slate-950 p-3 font-mono text-xs text-slate-400">
-              {result.sql}
-            </pre>
-          </div>
-        )}
-
-        {result && !result.guardrail_blocked && (
-          <div className="flex flex-col gap-4">
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr]">
-              <div>
-                <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Generated SQL
-                </h2>
-                <pre className="whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-950 p-3 font-mono text-sm text-slate-200">
-                  {result.sql}
-                </pre>
-                <p className="mt-2 text-sm text-slate-400">{result.explanation}</p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {result.execution_time_ms} ms · {result.row_count} rows
-                </p>
-              </div>
-              <ConfidenceBadge confidence={result.confidence} />
-            </div>
-
-            {result.warnings.length > 0 && (
-              <div className="rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200">
-                {result.warnings.map((w) => (
-                  <p key={w}>⚠️ {w}</p>
-                ))}
-              </div>
-            )}
-
-            <ResultsTable columns={result.columns} rows={result.rows} />
-          </div>
-        )}
-
-        <HistoryList items={history.slice(1)} />
+        </div>
       </main>
+
+      <div className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </div>
     </div>
   );
 }

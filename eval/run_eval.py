@@ -24,9 +24,18 @@ DATABASE_URL = os.getenv(
 )
 
 # Matches ISO-ish date/timestamp strings (e.g. "2024-12", "2024-12-01",
-# "2024-12-01 00:00:00") so they can be normalized against native
-# date/datetime/Timestamp objects before comparison.
-_DATE_LIKE = re.compile(r"^\d{4}-\d{2}(-\d{2})?([ T]\d{2}:\d{2}(:\d{2})?)?$")
+# "2024-12-01 00:00:00", "2024-12-01T00:00:00Z", "2024-12-01T00:00:00.5+05:30")
+# so they can be normalized against native date/datetime/Timestamp objects.
+_DATE_LIKE = re.compile(
+    r"^\d{4}-\d{2}(-\d{2})?([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$"
+)
+
+
+def _to_naive_utc_iso(value) -> str:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts.isoformat()
 
 
 def _normalize(value):
@@ -34,16 +43,14 @@ def _normalize(value):
     false negatives: (1) the API JSON-encodes Decimal as a string while a
     direct DB query keeps it as Decimal, and (2) two SQL queries can
     represent the same month/day at different granularities/formats
-    (e.g. '2024-12' vs a DATE_TRUNC timestamp)."""
+    (e.g. '2024-12', '2024-12-01T00:00:00Z' and a tz-aware DATE_TRUNC
+    timestamp all name the same month)."""
     if value is None:
         return None
     if isinstance(value, (datetime, date, pd.Timestamp)):
-        ts = pd.Timestamp(value)
-        if ts.tzinfo is not None:
-            ts = ts.tz_convert("UTC").tz_localize(None)
-        return ts.isoformat()
+        return _to_naive_utc_iso(value)
     if isinstance(value, str) and _DATE_LIKE.match(value):
-        return pd.Timestamp(value).isoformat()
+        return _to_naive_utc_iso(value)
     return str(value)
 
 

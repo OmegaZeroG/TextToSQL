@@ -36,7 +36,10 @@ def _max_parenthesis_depth(tokens, depth=0) -> int:
     return deepest
 
 
-def check_sql(sql: str) -> GuardrailResult:
+def check_sql(sql: str, for_execution: bool = True) -> GuardrailResult:
+    """Safety checks (read-only, single statement) always apply. The row limit
+    and nesting-depth cap only guard a database that is about to run the
+    query, so they're skipped when the SQL is only being generated for display."""
     if not sql or not sql.strip():
         return GuardrailResult(allowed=False, reason="Empty SQL statement.")
 
@@ -59,6 +62,9 @@ def check_sql(sql: str) -> GuardrailResult:
     first_word = stripped.split(None, 1)[0].upper() if stripped else ""
     if first_word not in ("SELECT", "WITH"):
         return GuardrailResult(allowed=False, reason=f"Only SELECT/WITH queries are permitted, got '{first_word}'.")
+
+    if not for_execution:
+        return GuardrailResult(allowed=True, sql=stripped)
 
     depth = _max_parenthesis_depth(statement.tokens)
     if depth > MAX_SUBQUERY_DEPTH:
