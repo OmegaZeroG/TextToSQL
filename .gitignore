@@ -13,3 +13,7 @@ node_modules/
 frontend/dist/
 frontend/.env
 frontend/.env.local
+*.tsbuildinfo
+
+# local tooling config (Claude Code browser preview), not part of the app
+.claude/

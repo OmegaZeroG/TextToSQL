@@ -48,12 +48,15 @@ export default function App() {
     setLoading(false);
   }
 
+  const showEmptyState = !loading && !result && !clarification && !errorMessage;
+
   return (
-    <div className="flex h-screen">
+    <div className="flex min-h-screen flex-col md:h-screen md:flex-row">
       <SchemaPanel
         schema={schema}
         loading={schemaLoading}
         error={schemaError}
+        activeExample={question}
         onPickExample={(q) => {
           setQuestion(q);
           handleAsk(q);
@@ -70,6 +73,20 @@ export default function App() {
         </header>
 
         <QueryForm value={question} onChange={setQuestion} onSubmit={handleAsk} loading={loading} />
+
+        {loading && (
+          <div className="space-y-3" aria-label="Generating SQL">
+            <div className="h-4 w-2/3 animate-pulse rounded bg-slate-800" />
+            <div className="h-20 w-full animate-pulse rounded-lg bg-slate-900" />
+            <div className="h-32 w-full animate-pulse rounded-lg bg-slate-900" />
+          </div>
+        )}
+
+        {showEmptyState && (
+          <p className="text-sm text-slate-500">
+            Pick a question from the sidebar or type your own to get started.
+          </p>
+        )}
 
         {errorMessage && (
           <div className="rounded-lg border border-red-800 bg-red-950/50 p-4 text-sm text-red-300">
