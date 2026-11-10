@@ -7,6 +7,9 @@ from app.config import (
     CACHE_TTL_SECONDS,
     CORS_ORIGINS,
     LLM_MODEL,
+    RATE_LIMIT_EXEMPT_IPS,
+    RATE_LIMIT_EXEMPT_LOCAL,
+    RATE_LIMIT_PER_DAY,
     RATE_LIMIT_PER_HOUR,
     RATE_LIMIT_PER_MINUTE,
     TRUSTED_PROXY_HOPS,
@@ -75,7 +78,16 @@ def _try_repair(
         return None
     return guardrail.sql, fixed, verify_sql(guardrail.sql, schema, request.dialect)
 
-limiter = RateLimiter(RATE_LIMIT_PER_MINUTE, 60, RATE_LIMIT_PER_HOUR, 3600, TRUSTED_PROXY_HOPS)
+limiter = RateLimiter(
+    RATE_LIMIT_PER_MINUTE,
+    60,
+    RATE_LIMIT_PER_HOUR,
+    3600,
+    TRUSTED_PROXY_HOPS,
+    daily=RATE_LIMIT_PER_DAY,
+    exempt_ips=RATE_LIMIT_EXEMPT_IPS,
+    exempt_local=RATE_LIMIT_EXEMPT_LOCAL,
+)
 cache = ResponseCache(CACHE_MAX_ENTRIES, CACHE_TTL_SECONDS)
 
 # Answers the checks themselves distrust are not remembered: asking again should get a

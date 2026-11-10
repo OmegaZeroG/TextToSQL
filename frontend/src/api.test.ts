@@ -211,3 +211,31 @@ describe("fetchDialects", () => {
     expect(await fetchDialects()).toEqual(FALLBACK_DIALECTS);
   });
 });
+
+describe("API address", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it.each([
+    ["https://api.example.com", "https://api.example.com"],
+    ["https://api.example.com/", "https://api.example.com"],
+    ["https://api.example.com///", "https://api.example.com"],
+    ["  https://api.example.com/  ", "https://api.example.com"],
+  ])("takes VITE_API_URL=%j as %j, so calls never contain a double slash", async (given, expected) => {
+    vi.stubEnv("VITE_API_URL", given);
+    vi.resetModules();
+    const { API_URL, checkHealth: health } = await import("./api");
+    expect(API_URL).toBe(expected);
+    const fn = stubFetch({ status: 200 });
+    await health();
+    expect(fn.mock.calls[0][0]).toBe(`${expected}/health`);
+  });
+
+  it("falls back to localhost for local development when unset", async () => {
+    vi.stubEnv("VITE_API_URL", undefined as unknown as string);
+    vi.resetModules();
+    expect((await import("./api")).API_URL).toBe("http://localhost:8000");
+  });
+});

@@ -7,7 +7,8 @@ import type {
   SchemaUpdateResponse,
 } from "./types";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+// A trailing slash is easy to paste in (https://x.onrender.com/) and would make every call `//v1/...`.
+export const API_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8000").trim().replace(/\/+$/, "");
 
 export const FALLBACK_DIALECTS: Dialect[] = [
   { id: "postgres", label: "PostgreSQL" },

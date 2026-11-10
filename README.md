@@ -152,8 +152,8 @@ wraps the same commands (`-Port 8010` to change the API port). Or run both with
 ## Tests
 
 ```bash
-cd backend && pytest        # 681 tests, no network, no LLM key needed
-cd frontend && npm test     # 220 tests
+cd backend && pytest        # 700 tests, no network, no LLM key needed
+cd frontend && npm test     # 225 tests
 ```
 
 The backend suite runs the whole request pipeline against a scripted fake LLM, so
@@ -220,9 +220,14 @@ thousand tokens, and a full eval run uses a large share of a day's allowance.
    and add `VITE_API_URL` = your Render URL.
 3. **Tighten CORS.** Set `CORS_ORIGINS` on Render to your Vercel URL
    (it defaults to `*`).
-4. **Check the rate limits.** `RATE_LIMIT_PER_MINUTE` (per address) and
-   `RATE_LIMIT_PER_HOUR` (everyone) protect your Groq quota; set a value to `0` to turn
-   it off. `TRUSTED_PROXY_HOPS` is how many proxies sit in front of the app (`1` on
+4. **Check the rate limits.** `RATE_LIMIT_PER_MINUTE` (per address),
+   `RATE_LIMIT_PER_HOUR` and `RATE_LIMIT_PER_DAY` (everyone) protect your Groq quota; set a
+   value to `0` to turn it off. The daily default is 20 questions per Groq key, from a
+   rough estimate of about 9,000 tokens a question; answers served from the cache don't
+   count. To exempt your own machine on the deployed site, set `RATE_LIMIT_EXEMPT_IPS` to
+   your public IP (comma-separated for several). Direct connections from your own
+   computer or network (local development, Docker) are exempt automatically, but
+   requests arriving through a proxy such as Render never are. `TRUSTED_PROXY_HOPS` is how many proxies sit in front of the app (`1` on
    Render). If every visitor appears to share one address, the number is too high.
    Over the limit, the API returns HTTP 429 with a `Retry-After` header and the UI shows
    the message.
@@ -263,8 +268,9 @@ render.yaml             Render Blueprint
 - **Repairs cost extra LLM calls** (up to two per request) and add a little latency when
   the first draft has problems.
 - **The endpoints are unauthenticated** and spend your Groq key. They are rate limited
-  (10 requests a minute per address, 120 an hour overall, both configurable), which keeps
-  one visitor from using up the quota but is not access control. The limits are kept in
+  (10 requests a minute per address, 120 an hour and 20 a day per API key overall, all
+  configurable), which keeps visitors from using up the quota but is not access control.
+  Requests from your own computer are exempt. The limits are kept in
   memory, so they reset on restart and are per instance.
 - **Repeated questions are cached** (500 answers for 24 hours, in memory, so per
   instance and gone after a restart) to save tokens. The same question, schema and

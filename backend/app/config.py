@@ -36,5 +36,14 @@ CACHE_TTL_SECONDS = _int("CACHE_TTL_SECONDS", 24 * 3600)
 # 0 turns a limit off.
 RATE_LIMIT_PER_MINUTE = _int("RATE_LIMIT_PER_MINUTE", 10)  # per client address
 RATE_LIMIT_PER_HOUR = _int("RATE_LIMIT_PER_HOUR", 120)  # across everyone
+# Requests per day across everyone. A question costs roughly 9,000 tokens (about three model
+# calls; an estimate, not measured) and a free Groq key allows 200,000 tokens a day, so the
+# default is 20 questions per key. Repeats served from the cache don't count. 0 turns it off.
+_KEY_COUNT = len({k.strip() for k in [GROQ_API_KEY, *GROQ_EXTRA_KEYS] if k.strip()}) if LLM_PROVIDER.lower() == "groq" else 1
+RATE_LIMIT_PER_DAY = _int("RATE_LIMIT_PER_DAY", 20 * max(1, _KEY_COUNT))
+# Addresses that skip every limit (your own public IP, for the deployed site), comma-separated.
+RATE_LIMIT_EXEMPT_IPS = {ip.strip() for ip in os.getenv("RATE_LIMIT_EXEMPT_IPS", "").split(",") if ip.strip()}
+# Skip the limits for direct connections from this computer or its network (local development, Docker).
+RATE_LIMIT_EXEMPT_LOCAL = _int("RATE_LIMIT_EXEMPT_LOCAL", 1) == 1
 # How many reverse proxies sit in front of the app (Render: 1). 0 ignores X-Forwarded-For.
 TRUSTED_PROXY_HOPS = _int("TRUSTED_PROXY_HOPS", 1)

@@ -2,12 +2,16 @@
 tier shared by everyone, so two limits apply to the endpoints that call it:
 
 * per client: a burst of requests from one address can't use the quota up alone;
-* global: even if many addresses (or a spoofed header) get past the first limit, the
-  total stays under a ceiling.
+* global, per hour and per day: even if many addresses (or a spoofed header) get past
+  the first limit, the total stays under a ceiling. The daily one is sized to what the
+  provider's free quota can actually pay for.
+
+The owner's own machine can be exempt from all of these (see `is_exempt`).
 
 State is in memory and per process, which is right for a single free-tier instance.
 A limit of 0 turns that limit off.
 """
+import ipaddress
 import threading
 import time
 from collections import deque
@@ -58,10 +62,16 @@ class RateLimiter:
         overall_window: float,
         proxy_hops: int = 1,
         clock: Callable[[], float] = time.monotonic,
+        daily: int = 0,
+        exempt_ips: frozenset[str] | set[str] = frozenset(),
+        exempt_local: bool = False,
     ):
         self._client = SlidingWindow(per_client, per_client_window, clock)
         self._overall = SlidingWindow(overall, overall_window, clock)
+        self._daily = SlidingWindow(daily, 24 * 3600, clock)
         self._proxy_hops = proxy_hops
+        self._exempt_ips = set(exempt_ips)
+        self._exempt_local = exempt_local
 
     def client_id(self, request: Request) -> str:
         """The caller's address. Behind a proxy the real address is the entry the
@@ -72,18 +82,45 @@ class RateLimiter:
             return forwarded[-self._proxy_hops]
         return request.client.host if request.client else "unknown"
 
+    def is_exempt(self, request: Request) -> bool:
+        """True for the owner's own machine: an address listed in RATE_LIMIT_EXEMPT_IPS, or
+        (when enabled) a direct connection from this computer or its local network, as in
+        local development and Docker. A request that went through a proxy never counts as
+        local, however it got there: behind Render every caller arrives from a private
+        address, and treating that as "local" would exempt the whole internet."""
+        if self.client_id(request) in self._exempt_ips:
+            return True
+        if not self._exempt_local or request.headers.get("x-forwarded-for"):
+            return False
+        host = request.client.host if request.client else ""
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return address.is_loopback or address.is_private
+
     def enforce(self, request: Request) -> None:
+        if self.is_exempt(request):
+            return
         wait = self._client.hit(self.client_id(request))
         if wait is not None:
             self._reject("You're sending requests too quickly.", wait)
         wait = self._overall.hit("*")
         if wait is not None:
-            self._reject("The free demo has hit its usage limit for now.", wait)
+            self._reject("The free demo has hit its hourly usage limit.", wait)
+        wait = self._daily.hit("*")
+        if wait is not None:
+            self._reject("The free demo has reached its daily limit.", wait)
 
     @staticmethod
     def _reject(message: str, wait: float) -> None:
         seconds = max(1, int(wait) + 1)
-        when = f"{seconds} seconds" if seconds < 90 else f"{round(seconds / 60)} minutes"
+        if seconds < 90:
+            when = f"{seconds} seconds"
+        elif seconds < 90 * 60:
+            when = f"{round(seconds / 60)} minutes"
+        else:
+            when = f"{round(seconds / 3600)} hours"
         raise HTTPException(
             status_code=429,
             detail=f"{message} Please try again in about {when}.",

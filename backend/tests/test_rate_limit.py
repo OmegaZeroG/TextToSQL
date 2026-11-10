@@ -152,3 +152,114 @@ def test_enforce_raises_http_429():
     with pytest.raises(HTTPException) as info:
         limiter.enforce(request)
     assert info.value.status_code == 429
+
+
+class Req:
+    """Just enough of a request: headers and the socket address."""
+
+    def __init__(self, host="93.184.216.34", forwarded=None):  # a real public address (the documentation ranges count as private)
+        self.headers = {"x-forwarded-for": forwarded} if forwarded else {}
+        self.client = type("C", (), {"host": host})()
+
+
+class TestDailyCap:
+    def test_the_day_limit_blocks_across_clients_and_says_hours(self):
+        limiter = RateLimiter(0, 60, 0, 3600, daily=2)
+        limiter.enforce(Req("1.1.1.1"))
+        limiter.enforce(Req("2.2.2.2"))
+        with pytest.raises(HTTPException) as info:
+            limiter.enforce(Req("3.3.3.3"))
+        assert info.value.status_code == 429
+        assert "daily limit" in info.value.detail and "hours" in info.value.detail
+
+    def test_it_frees_up_after_a_day(self):
+        clock = Clock()
+        limiter = RateLimiter(0, 60, 0, 3600, clock=clock, daily=1)
+        limiter.enforce(Req())
+        with pytest.raises(HTTPException):
+            limiter.enforce(Req())
+        clock.now += 24 * 3600 + 1
+        limiter.enforce(Req())
+
+    def test_zero_turns_the_daily_limit_off(self):
+        limiter = RateLimiter(0, 60, 0, 3600, daily=0)
+        for _ in range(500):
+            limiter.enforce(Req())
+
+    def test_the_default_is_20_per_key(self, monkeypatch):
+        import importlib
+
+        from app import config
+
+        monkeypatch.delenv("RATE_LIMIT_PER_DAY", raising=False)
+        monkeypatch.setenv("LLM_PROVIDER", "groq")
+        monkeypatch.setenv("GROQ_API_KEY", "a")
+        monkeypatch.setenv("GROQ_API_KEY2", "b")
+        monkeypatch.setenv("GROQ_API_KEY3", "b")  # a duplicate is not another key
+        monkeypatch.setenv("GROQ_API_KEYS", "c, ,a")
+        for n in range(4, 10):  # a developer's own .env may define more
+            monkeypatch.setenv(f"GROQ_API_KEY{n}", "")
+        try:
+            assert importlib.reload(config).RATE_LIMIT_PER_DAY == 60
+            monkeypatch.setenv("RATE_LIMIT_PER_DAY", "7")
+            assert importlib.reload(config).RATE_LIMIT_PER_DAY == 7
+        finally:
+            monkeypatch.undo()
+            importlib.reload(config)
+
+
+class TestOwnersMachine:
+    def limiter(self, **kw):
+        return RateLimiter(1, 60, 1, 3600, daily=1, exempt_local=True, **kw)
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "192.168.65.1", "172.17.0.1", "10.0.0.8"])
+    def test_a_direct_local_connection_skips_every_limit(self, host):
+        limiter = self.limiter()
+        for _ in range(20):
+            limiter.enforce(Req(host))
+
+    def test_local_requests_do_not_use_up_the_visitors_allowance(self):
+        limiter = self.limiter()
+        for _ in range(20):
+            limiter.enforce(Req("127.0.0.1"))
+        limiter.enforce(Req("93.184.216.34"))  # the one allowed visitor request still works
+
+    @pytest.mark.parametrize("host", ["93.184.216.34", "8.8.8.8", "testclient", ""])
+    def test_a_public_address_is_limited(self, host):
+        limiter = self.limiter()
+        limiter.enforce(Req(host))
+        with pytest.raises(HTTPException):
+            limiter.enforce(Req(host))
+
+    def test_behind_a_proxy_a_private_socket_address_is_not_local(self):
+        # On Render every caller reaches the app from the proxy's private address.
+        limiter = self.limiter()
+        limiter.enforce(Req("10.0.0.8", forwarded="203.0.113.5"))
+        with pytest.raises(HTTPException):
+            limiter.enforce(Req("10.0.0.8", forwarded="203.0.113.5"))
+
+    def test_a_caller_cannot_claim_to_be_local_with_a_forged_header(self):
+        limiter = self.limiter()
+        limiter.enforce(Req("10.0.0.8", forwarded="127.0.0.1, 203.0.113.5"))
+        with pytest.raises(HTTPException):
+            limiter.enforce(Req("10.0.0.8", forwarded="127.0.0.1, 203.0.113.5"))
+
+    def test_the_local_exemption_can_be_turned_off(self):
+        limiter = RateLimiter(1, 60, 0, 3600, exempt_local=False)
+        limiter.enforce(Req("127.0.0.1"))
+        with pytest.raises(HTTPException):
+            limiter.enforce(Req("127.0.0.1"))
+
+    def test_a_listed_public_address_is_exempt_even_behind_the_proxy(self):
+        limiter = RateLimiter(1, 60, 1, 3600, daily=1, exempt_ips={"198.51.100.7"})
+        for _ in range(20):
+            limiter.enforce(Req("10.0.0.8", forwarded="198.51.100.7"))
+        limiter.enforce(Req("10.0.0.8", forwarded="203.0.113.5"))
+        with pytest.raises(HTTPException):
+            limiter.enforce(Req("10.0.0.8", forwarded="203.0.113.6"))
+
+    def test_a_forged_header_cannot_borrow_a_listed_address(self):
+        limiter = RateLimiter(1, 60, 0, 3600, exempt_ips={"198.51.100.7"})
+        limiter.enforce(Req("10.0.0.8", forwarded="198.51.100.7, 203.0.113.5"))
+        with pytest.raises(HTTPException):
+            limiter.enforce(Req("10.0.0.8", forwarded="198.51.100.7, 203.0.113.5"))
