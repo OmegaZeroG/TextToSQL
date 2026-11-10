@@ -99,6 +99,319 @@ rule in every dialect, so the guidance and the validator cannot drift apart.
 self-assessment gets the smallest weight because it is the least reliable. With no
 schema the result is capped at 0.6.
 
+## Diagrams
+
+The diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders in place.
+
+### System architecture (deployment)
+
+```mermaid
+flowchart LR
+    subgraph Browser["User's browser"]
+        UI["React app"]
+        LS[("localStorage<br/>schema, dialect, history,<br/>theme, guide seen")]
+        UI <--> LS
+    end
+
+    subgraph Vercel["Vercel (static hosting)"]
+        Static["Built frontend<br/>HTML, JS, CSS"]
+    end
+
+    subgraph Render["Render (Docker, one process)"]
+        API["FastAPI backend<br/>stateless, no database"]
+        Mem[("In memory<br/>rate limits, answer cache,<br/>key cool-downs")]
+        API <--> Mem
+    end
+
+    subgraph Groq["Groq (free tier)"]
+        K1["API key 1"]
+        K2["API key 2 ... 5"]
+    end
+
+    Static -- "loads" --> UI
+    UI -- "HTTPS JSON: question + schema" --> API
+    API -- "LLM calls, keys tried in order" --> K1
+    API -. "when a key is out of quota" .-> K2
+```
+
+No database exists anywhere. The schema lives in the browser and travels with each
+request, and the generated SQL is never run against real data.
+
+### Use cases
+
+Mermaid has no use-case diagram type, so this is drawn as a flowchart in the usual style.
+
+```mermaid
+flowchart LR
+    user(["User"])
+    llm(["LLM provider"])
+
+    subgraph System["plainquery"]
+        UC1(["Save or update a schema<br/>(SQL or plain English)"])
+        UC2(["Ask a question in plain English"])
+        UC3(["Choose the SQL dialect"])
+        UC4(["Review SQL, confidence<br/>and warnings"])
+        UC5(["Copy or download the SQL"])
+        UC6(["Browse and reopen history"])
+        UC7(["Take the guided tour"])
+        UC8(["Switch light or dark theme"])
+        UC9(["Adopt the assumed schema<br/>(when none was given)"])
+    end
+
+    user --- UC1
+    user --- UC2
+    user --- UC3
+    user --- UC4
+    user --- UC5
+    user --- UC6
+    user --- UC7
+    user --- UC8
+    UC2 -. include .-> UC3
+    UC2 -. extend .-> UC9
+    UC1 -. uses .-> llm
+    UC2 -. uses .-> llm
+```
+
+### Sequence: answering a question
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant FE as React app
+    participant API as FastAPI /v1/generate
+    participant V as Verifier
+    participant LLM as LLM (Groq)
+
+    User->>FE: question, with saved schema and dialect
+    FE->>API: POST /v1/generate
+    alt same question, schema and dialect answered before
+        API-->>FE: 200 stored answer, X-Cache HIT, no tokens spent
+    else new question
+        API->>API: rate limit check (429 when over)
+        API->>API: parse the schema (422 when unreadable)
+        API->>LLM: write SQL, with dialect guidance and rules
+        LLM-->>API: SQL, explanation, confidence
+        alt ambiguous or unanswerable for this schema
+            API-->>FE: 422 with the possible interpretations
+        else
+            API->>API: guardrail, one read-only SELECT or WITH?
+            alt blocked
+                API-->>FE: 200 guardrail_blocked with the reason
+            else allowed
+                API->>V: verify SQL against schema and dialect
+                loop up to 2 repair rounds while errors remain
+                    API->>LLM: repair, with the exact problems found
+                    LLM-->>API: new SQL
+                    API->>V: verify again, keep it only if fewer errors
+                end
+                API->>LLM: back-translate the SQL into a question
+                LLM-->>API: how well it matches yours
+                API->>API: combine into one confidence score
+                API-->>FE: 200 SQL, confidence, warnings
+            end
+        end
+    end
+    FE-->>User: SQL, confidence gauge, history entry
+```
+
+Answers with confidence under 0.5 and errors are not stored in the cache.
+
+### Activity: verify and repair
+
+```mermaid
+flowchart TD
+    A(["SQL from the model"]) --> B{"One read-only<br/>SELECT or WITH?"}
+    B -- no --> X(["Blocked: never shown as an answer"])
+    B -- yes --> C["Syntax: parse in the chosen dialect"]
+    C -- invalid --> G
+    C -- valid --> D["Schema: tables and columns exist"]
+    D --> E["Logic and dialect rules"]
+    E --> F["Trial run on throwaway<br/>SQLite test data"]
+    F --> G{"Any errors?"}
+    G -- no --> H["Back-translate and score"]
+    G -- yes --> I{"Repair rounds left?<br/>(at most 2)"}
+    I -- no --> J["Keep the draft, show its problems,<br/>lower the confidence"]
+    I -- yes --> K["Ask the model to fix<br/>the exact problems"]
+    K --> L{"Passes the guardrail and<br/>has fewer errors?"}
+    L -- yes --> C
+    L -- no --> J
+    J --> H
+    H --> M(["Response with SQL, confidence, warnings"])
+```
+
+### Class diagram: backend
+
+```mermaid
+classDiagram
+    direction LR
+
+    class LLMProvider {
+        <<abstract>>
+        +complete(system_prompt, user_prompt, json_mode) str
+    }
+    class GroqProvider
+    class OpenAIProvider
+    class AnthropicProvider
+    class GeminiProvider
+    class FailoverProvider {
+        -providers: list~LLMProvider~
+        -resume_at: list~float~
+        +complete(system_prompt, user_prompt, json_mode) str
+    }
+    LLMProvider <|-- GroqProvider
+    LLMProvider <|-- OpenAIProvider
+    LLMProvider <|-- AnthropicProvider
+    LLMProvider <|-- GeminiProvider
+    LLMProvider <|-- FailoverProvider
+    FailoverProvider o-- "1..*" LLMProvider : one per API key
+
+    class ParsedSchema {
+        +tables: list~Table~
+        +table_names() dict
+        +as_sqlglot_schema() dict
+    }
+    class Table {
+        +name: str
+        +columns: list~Column~
+    }
+    class Column {
+        +name: str
+        +type: str
+        +primary_key: bool
+        +foreign_key: str
+    }
+    ParsedSchema "1" *-- "*" Table
+    Table "1" *-- "*" Column
+
+    class Issue {
+        +code: str
+        +message: str
+        +severity: str
+    }
+    class ExecutionResult {
+        +ran: bool
+        +issues: list~Issue~
+        +rows: list
+        +note: str
+    }
+    class Verdict {
+        +syntax_valid: bool
+        +schema_ok: bool
+        +logic_ok: bool
+        +errors: list~str~
+        +warnings: list~str~
+        +tables_used: list~str~
+        +executed: bool
+        +clean() bool
+    }
+    class GuardrailResult {
+        +allowed: bool
+        +reason: str
+        +sql: str
+    }
+    ExecutionResult o-- "*" Issue
+    Verdict ..> ParsedSchema : checks against
+    Verdict ..> Issue : built from
+    Verdict ..> ExecutionResult : trial run
+
+    class RateLimiter {
+        +enforce(request)
+        +is_exempt(request) bool
+        +client_id(request) str
+    }
+    class SlidingWindow {
+        +limit: int
+        +window: float
+        +hit(key) float
+    }
+    class ResponseCache {
+        +max_entries: int
+        +ttl: float
+        +get(key)
+        +put(key, value)
+    }
+    RateLimiter *-- "3" SlidingWindow : per client, hour, day
+
+    class GenerateRequest {
+        +question: str
+        +schema_ddl: str
+        +dialect: str
+    }
+    class GenerateResponse {
+        +sql: str
+        +explanation: str
+        +tables_used: list~str~
+        +warnings: list~str~
+        +guardrail_blocked: bool
+    }
+    class GenerateConfidence {
+        +syntax_valid: bool
+        +back_translation_alignment: float
+        +schema_check_passed: bool
+        +logic_check_passed: bool
+        +overall: float
+    }
+    GenerateResponse *-- GenerateConfidence
+
+    class GenerateEndpoint {
+        <<main.py>>
+        +generate(request) GenerateResponse
+    }
+    GenerateEndpoint ..> GenerateRequest
+    GenerateEndpoint ..> GenerateResponse
+    GenerateEndpoint ..> RateLimiter
+    GenerateEndpoint ..> ResponseCache
+    GenerateEndpoint ..> GuardrailResult
+    GenerateEndpoint ..> Verdict
+    GenerateEndpoint ..> LLMProvider
+    GenerateEndpoint ..> ParsedSchema
+```
+
+### State: an API key
+
+Each Groq key moves between these states. Keys are tried in the order given, so key 1 is
+used again as soon as it is available.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Available
+    Available --> Available : request succeeds
+    Available --> Available : other error, raised without switching keys
+    Available --> Benched : 429 quota, wait taken from Retry-After or "try again in"
+    Available --> Benched : 401 or 403 rejected key, benched for 1 hour
+    Benched --> Available : the wait is over
+    Benched --> Benched : skipped, the next key is used instead
+```
+
+When every key is benched, no request is sent and the user gets "The AI provider's free
+quota is used up for now" with the time to come back.
+
+### Components: frontend
+
+```mermaid
+flowchart TD
+    App["App<br/>state, requests, history"]
+
+    App --> Header["Header<br/>theme toggle, guide button"]
+    App --> SchemaCard["SchemaCard<br/>save and change the schema"]
+    App --> QuestionCard["QuestionCard<br/>question, dialect, Ctrl+Enter"]
+    App --> ResultCard["ResultCard"]
+    App --> HistoryList["HistoryList"]
+    App --> GuideTour["GuideTour<br/>spotlight steps"]
+
+    ResultCard --> SqlBlock["SqlBlock<br/>highlighting"]
+    ResultCard --> ConfidenceGauge["ConfidenceGauge"]
+    ResultCard --> CopyButton["CopyButton"]
+    ResultCard --> LoadingSteps["LoadingSteps<br/>skeleton and progress"]
+
+    App --> api["api.ts<br/>fetch wrapper"]
+    App --> storage["storage.ts<br/>localStorage"]
+    App --> hooks["hooks<br/>useTheme, useServerStatus"]
+
+    api -- "HTTPS JSON" --> Backend[("FastAPI backend")]
+    storage --> LS[("localStorage")]
+```
+
 ## API
 
 | Method | Path | Purpose |

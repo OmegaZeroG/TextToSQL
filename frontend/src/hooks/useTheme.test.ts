@@ -14,6 +14,38 @@ describe("useTheme", () => {
     expect(renderHook(() => useTheme()).result.current.theme).toBe("light");
   });
 
+  it("ignores an operating system set to dark: light is the default", () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("dark"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+      onchange: null,
+    }));
+    try {
+      const { result } = renderHook(() => useTheme());
+      expect(result.current.theme).toBe("light");
+      expect(document.documentElement.classList.contains("dark")).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("colours the browser bar to match the theme", () => {
+    document.head.insertAdjacentHTML("beforeend", '<meta name="theme-color" content="#f8f6f1" />');
+    const bar = () => document.querySelector('meta[name="theme-color"]')?.getAttribute("content");
+    const { result } = renderHook(() => useTheme());
+    expect(bar()).toBe("#f8f6f1");
+    act(() => result.current.toggle());
+    expect(bar()).toBe("#14201b");
+    act(() => result.current.toggle());
+    expect(bar()).toBe("#f8f6f1");
+    document.querySelector('meta[name="theme-color"]')?.remove();
+  });
+
   it("toggles, updates the page class, and remembers the choice", () => {
     const { result } = renderHook(() => useTheme());
 
