@@ -7,6 +7,7 @@ import HistoryList from "./components/HistoryList";
 import QuestionCard from "./components/QuestionCard";
 import ResultCard from "./components/ResultCard";
 import SchemaCard from "./components/SchemaCard";
+import Icon from "./components/ui/Icon";
 import { useServerStatus } from "./hooks/useServerStatus";
 import { useTheme } from "./hooks/useTheme";
 import { plural } from "./lib/format";
@@ -268,6 +269,19 @@ export default function App() {
       />
 
       <main id="main" className="mx-auto max-w-6xl px-4 pb-safe pt-8 sm:px-6 sm:pt-12">
+        {server.state === "offline" && (
+          <p
+            role="note"
+            className="mb-6 flex animate-scale-in items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm"
+          >
+            <Icon name="alert" className="mt-0.5 shrink-0 text-warning-foreground" />
+            <span>
+              Can't reach the server. If you use an ad or content blocker (for example Brave Shields or uBlock),
+              turn it off for this site and press Retry. A free server that has been idle can also take up to a
+              minute to wake.
+            </span>
+          </p>
+        )}
         <section className="mb-8 max-w-3xl animate-rise-in sm:mb-10">
           <p className="mb-3 flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-primary">
             <span aria-hidden="true">&lt;/&gt;</span>

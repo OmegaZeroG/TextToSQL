@@ -409,10 +409,13 @@ describe("server status and theme", () => {
     const { user } = setup();
 
     expect(await screen.findByText("Can't reach the server")).toBeInTheDocument();
+    // The notice points at the most common cause for visitors: a content blocker.
+    expect(screen.getByRole("note")).toHaveTextContent(/content blocker.*turn it off for this site/i);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(await screen.findByText("Your schema stays in this browser")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
   });
 
   it("switches theme and remembers it", async () => {

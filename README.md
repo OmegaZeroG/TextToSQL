@@ -7,6 +7,11 @@ There is **no database behind it**. Your schema lives in your browser and travel
 with each request; the backend never connects to anything and never runs a query.
 The whole thing deploys free: a Groq key, a Render web service and a Vercel site.
 
+**Live demo: [plainquery-drab.vercel.app](https://plainquery-drab.vercel.app)**
+(the API runs on Render's free tier, so the first request after a quiet spell can take
+up to a minute while it wakes; ad blockers can stop the page reaching the API, so turn
+yours off for the site if it says it can't reach the server).
+
 <p align="center">
   <img src="docs/screenshot-light.jpg" width="49%" alt="Result with no schema: SQL, explanation and a capped Medium confidence" />
   <img src="docs/screenshot-dark.jpg" width="49%" alt="Dark mode with a saved schema: High confidence" />
@@ -137,41 +142,6 @@ flowchart LR
 No database exists anywhere. The schema lives in the browser and travels with each
 request, and the generated SQL is never run against real data.
 
-### Use cases
-
-Mermaid has no use-case diagram type, so this is drawn as a flowchart in the usual style.
-
-```mermaid
-flowchart LR
-    user(["User"])
-    llm(["LLM provider"])
-
-    subgraph System["plainquery"]
-        UC1(["Save or update a schema<br/>(SQL or plain English)"])
-        UC2(["Ask a question in plain English"])
-        UC3(["Choose the SQL dialect"])
-        UC4(["Review SQL, confidence<br/>and warnings"])
-        UC5(["Copy or download the SQL"])
-        UC6(["Browse and reopen history"])
-        UC7(["Take the guided tour"])
-        UC8(["Switch light or dark theme"])
-        UC9(["Adopt the assumed schema<br/>(when none was given)"])
-    end
-
-    user --- UC1
-    user --- UC2
-    user --- UC3
-    user --- UC4
-    user --- UC5
-    user --- UC6
-    user --- UC7
-    user --- UC8
-    UC2 -. include .-> UC3
-    UC2 -. extend .-> UC9
-    UC1 -. uses .-> llm
-    UC2 -. uses .-> llm
-```
-
 ### Sequence: answering a question
 
 ```mermaid
@@ -239,134 +209,6 @@ flowchart TD
     H --> M(["Response with SQL, confidence, warnings"])
 ```
 
-### Class diagram: backend
-
-```mermaid
-classDiagram
-    direction LR
-
-    class LLMProvider {
-        <<abstract>>
-        +complete(system_prompt, user_prompt, json_mode) str
-    }
-    class GroqProvider
-    class OpenAIProvider
-    class AnthropicProvider
-    class GeminiProvider
-    class FailoverProvider {
-        -providers: list~LLMProvider~
-        -resume_at: list~float~
-        +complete(system_prompt, user_prompt, json_mode) str
-    }
-    LLMProvider <|-- GroqProvider
-    LLMProvider <|-- OpenAIProvider
-    LLMProvider <|-- AnthropicProvider
-    LLMProvider <|-- GeminiProvider
-    LLMProvider <|-- FailoverProvider
-    FailoverProvider o-- "1..*" LLMProvider : one per API key
-
-    class ParsedSchema {
-        +tables: list~Table~
-        +table_names() dict
-        +as_sqlglot_schema() dict
-    }
-    class Table {
-        +name: str
-        +columns: list~Column~
-    }
-    class Column {
-        +name: str
-        +type: str
-        +primary_key: bool
-        +foreign_key: str
-    }
-    ParsedSchema "1" *-- "*" Table
-    Table "1" *-- "*" Column
-
-    class Issue {
-        +code: str
-        +message: str
-        +severity: str
-    }
-    class ExecutionResult {
-        +ran: bool
-        +issues: list~Issue~
-        +rows: list
-        +note: str
-    }
-    class Verdict {
-        +syntax_valid: bool
-        +schema_ok: bool
-        +logic_ok: bool
-        +errors: list~str~
-        +warnings: list~str~
-        +tables_used: list~str~
-        +executed: bool
-        +clean() bool
-    }
-    class GuardrailResult {
-        +allowed: bool
-        +reason: str
-        +sql: str
-    }
-    ExecutionResult o-- "*" Issue
-    Verdict ..> ParsedSchema : checks against
-    Verdict ..> Issue : built from
-    Verdict ..> ExecutionResult : trial run
-
-    class RateLimiter {
-        +enforce(request)
-        +is_exempt(request) bool
-        +client_id(request) str
-    }
-    class SlidingWindow {
-        +limit: int
-        +window: float
-        +hit(key) float
-    }
-    class ResponseCache {
-        +max_entries: int
-        +ttl: float
-        +get(key)
-        +put(key, value)
-    }
-    RateLimiter *-- "3" SlidingWindow : per client, hour, day
-
-    class GenerateRequest {
-        +question: str
-        +schema_ddl: str
-        +dialect: str
-    }
-    class GenerateResponse {
-        +sql: str
-        +explanation: str
-        +tables_used: list~str~
-        +warnings: list~str~
-        +guardrail_blocked: bool
-    }
-    class GenerateConfidence {
-        +syntax_valid: bool
-        +back_translation_alignment: float
-        +schema_check_passed: bool
-        +logic_check_passed: bool
-        +overall: float
-    }
-    GenerateResponse *-- GenerateConfidence
-
-    class GenerateEndpoint {
-        <<main.py>>
-        +generate(request) GenerateResponse
-    }
-    GenerateEndpoint ..> GenerateRequest
-    GenerateEndpoint ..> GenerateResponse
-    GenerateEndpoint ..> RateLimiter
-    GenerateEndpoint ..> ResponseCache
-    GenerateEndpoint ..> GuardrailResult
-    GenerateEndpoint ..> Verdict
-    GenerateEndpoint ..> LLMProvider
-    GenerateEndpoint ..> ParsedSchema
-```
-
 ### State: an API key
 
 Each Groq key moves between these states. Keys are tried in the order given, so key 1 is
@@ -385,32 +227,6 @@ stateDiagram-v2
 
 When every key is benched, no request is sent and the user gets "The AI provider's free
 quota is used up for now" with the time to come back.
-
-### Components: frontend
-
-```mermaid
-flowchart TD
-    App["App<br/>state, requests, history"]
-
-    App --> Header["Header<br/>theme toggle, guide button"]
-    App --> SchemaCard["SchemaCard<br/>save and change the schema"]
-    App --> QuestionCard["QuestionCard<br/>question, dialect, Ctrl+Enter"]
-    App --> ResultCard["ResultCard"]
-    App --> HistoryList["HistoryList"]
-    App --> GuideTour["GuideTour<br/>spotlight steps"]
-
-    ResultCard --> SqlBlock["SqlBlock<br/>highlighting"]
-    ResultCard --> ConfidenceGauge["ConfidenceGauge"]
-    ResultCard --> CopyButton["CopyButton"]
-    ResultCard --> LoadingSteps["LoadingSteps<br/>skeleton and progress"]
-
-    App --> api["api.ts<br/>fetch wrapper"]
-    App --> storage["storage.ts<br/>localStorage"]
-    App --> hooks["hooks<br/>useTheme, useServerStatus"]
-
-    api -- "HTTPS JSON" --> Backend[("FastAPI backend")]
-    storage --> LS[("localStorage")]
-```
 
 ## API
 
@@ -466,7 +282,7 @@ wraps the same commands (`-Port 8010` to change the API port). Or run both with
 
 ```bash
 cd backend && pytest        # 700 tests, no network, no LLM key needed
-cd frontend && npm test     # 225 tests
+cd frontend && npm test     # 227 tests
 ```
 
 The backend suite runs the whole request pipeline against a scripted fake LLM, so
