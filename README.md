@@ -281,7 +281,7 @@ wraps the same commands (`-Port 8010` to change the API port). Or run both with
 ## Tests
 
 ```bash
-cd backend && pytest        # 700 tests, no network, no LLM key needed
+cd backend && pytest        # 703 tests, no network, no LLM key needed
 cd frontend && npm test     # 227 tests
 ```
 

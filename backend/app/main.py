@@ -114,7 +114,9 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
+# Uptime monitors (UptimeRobot's free plan, for one) probe with HEAD, and Render's own check uses GET.
+# Touches no database and no model, so frequent pings cost nothing.
+@app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
 def health():
     return {"status": "ok"}
 

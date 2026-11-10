@@ -263,3 +263,19 @@ class TestOwnersMachine:
         limiter.enforce(Req("10.0.0.8", forwarded="198.51.100.7, 203.0.113.5"))
         with pytest.raises(HTTPException):
             limiter.enforce(Req("10.0.0.8", forwarded="198.51.100.7, 203.0.113.5"))
+
+
+class TestHealthProbes:
+    """Uptime monitors send HEAD; a 405 there makes a healthy server look down."""
+
+    def test_get_returns_ok(self, api):
+        response = api.client.get("/health")
+        assert response.status_code == 200 and response.json() == {"status": "ok"}
+
+    def test_head_is_accepted_and_has_no_body(self, api):
+        response = api.client.head("/health")
+        assert response.status_code == 200
+        assert response.content == b""
+
+    def test_other_methods_are_still_refused(self, api):
+        assert api.client.post("/health").status_code == 405
