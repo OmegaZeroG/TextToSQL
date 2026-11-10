@@ -19,6 +19,7 @@ def test_unknown_provider_is_rejected(monkeypatch):
 def test_missing_api_key_fails_fast_with_a_clear_message(monkeypatch, provider, key_attr):
     monkeypatch.setattr(config, "LLM_PROVIDER", provider)
     monkeypatch.setattr(config, key_attr, "")
+    monkeypatch.setattr(config, "GROQ_EXTRA_KEYS", [])  # a developer's real .env may define extras
     with pytest.raises(RuntimeError, match=f"{key_attr} is not set"):
         get_llm_provider()
 
@@ -26,5 +27,6 @@ def test_missing_api_key_fails_fast_with_a_clear_message(monkeypatch, provider, 
 def test_provider_name_is_case_insensitive(monkeypatch):
     monkeypatch.setattr(config, "LLM_PROVIDER", "GROQ")
     monkeypatch.setattr(config, "GROQ_API_KEY", "")
+    monkeypatch.setattr(config, "GROQ_EXTRA_KEYS", [])
     with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
         get_llm_provider()

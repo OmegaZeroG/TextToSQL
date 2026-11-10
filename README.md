@@ -152,7 +152,7 @@ wraps the same commands (`-Port 8010` to change the API port). Or run both with
 ## Tests
 
 ```bash
-cd backend && pytest        # 632 tests, no network, no LLM key needed
+cd backend && pytest        # 681 tests, no network, no LLM key needed
 cd frontend && npm test     # 220 tests
 ```
 
@@ -211,7 +211,10 @@ thousand tokens, and a full eval run uses a large share of a day's allowance.
 ## Deploy for free
 
 1. **Backend on Render.** New, then Blueprint, pick this repo; it reads `render.yaml`.
-   Set one secret, `GROQ_API_KEY`. The free tier sleeps when idle, so the first
+   Set one secret, `GROQ_API_KEY`. To get more free daily quota, add extra keys as
+   `GROQ_API_KEY2` ... `GROQ_API_KEY9`, or one comma-separated `GROQ_API_KEYS`; when a
+   key runs out the app moves to the next and goes back to the first once it resets.
+   Each key needs its own Groq account, so check Groq's terms before doing this. The free tier sleeps when idle, so the first
    request after a quiet spell takes about a minute; the UI says so while it waits.
 2. **Frontend on Vercel.** Import the repo, set **Root Directory** to `frontend`,
    and add `VITE_API_URL` = your Render URL.
@@ -238,7 +241,9 @@ backend/app/
   sql_generation.py     prompts for generation and repair
   guardrails.py         single read-only SELECT check
   validation.py         back-translation judge and confidence formula
-  llm/                  provider interface + Groq, OpenAI, Anthropic, Gemini
+  llm/                  provider interface + Groq, OpenAI, Anthropic, Gemini, key failover
+  rate_limit.py         per-client and overall request limits
+  cache.py              remembers finished answers
 backend/tests/          pytest suite
 frontend/src/           React app (components, hooks, api, localStorage)
 eval/                   golden dataset, sample database, eval runner
@@ -261,6 +266,11 @@ render.yaml             Render Blueprint
   (10 requests a minute per address, 120 an hour overall, both configurable), which keeps
   one visitor from using up the quota but is not access control. The limits are kept in
   memory, so they reset on restart and are per instance.
+- **Repeated questions are cached** (500 answers for 24 hours, in memory, so per
+  instance and gone after a restart) to save tokens. The same question, schema and
+  dialect returns the stored answer, so asking again won't give a different attempt.
+  Weak answers (confidence under 50%) and errors are never stored. Set `CACHE_MAX_ENTRIES=0`
+  to turn it off.
 - **LLM output varies** between runs, as the eval shows.
 - Fonts load from the Google Fonts CDN.
 

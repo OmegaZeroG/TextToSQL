@@ -1,7 +1,16 @@
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import CORS_ORIGINS, RATE_LIMIT_PER_HOUR, RATE_LIMIT_PER_MINUTE, TRUSTED_PROXY_HOPS
+from app.cache import ResponseCache, make_key
+from app.config import (
+    CACHE_MAX_ENTRIES,
+    CACHE_TTL_SECONDS,
+    CORS_ORIGINS,
+    LLM_MODEL,
+    RATE_LIMIT_PER_HOUR,
+    RATE_LIMIT_PER_MINUTE,
+    TRUSTED_PROXY_HOPS,
+)
 from app.guardrails import check_sql
 from app.llm.factory import get_llm_provider
 from app.models import (
@@ -67,6 +76,11 @@ def _try_repair(
     return guardrail.sql, fixed, verify_sql(guardrail.sql, schema, request.dialect)
 
 limiter = RateLimiter(RATE_LIMIT_PER_MINUTE, 60, RATE_LIMIT_PER_HOUR, 3600, TRUSTED_PROXY_HOPS)
+cache = ResponseCache(CACHE_MAX_ENTRIES, CACHE_TTL_SECONDS)
+
+# Answers the checks themselves distrust are not remembered: asking again should get a
+# fresh attempt, not the same weak answer for a day.
+MIN_CACHEABLE_CONFIDENCE = 0.5
 
 
 def rate_limit(request: Request) -> None:
@@ -120,8 +134,25 @@ def analyze(request: SchemaAnalyzeRequest):
     )
 
 
-@app.post("/v1/generate", response_model=GenerateResponse, dependencies=[Depends(rate_limit)])
-def generate(request: GenerateRequest):
+@app.post("/v1/generate", response_model=GenerateResponse)
+def generate(request: GenerateRequest, http_request: Request, response: Response):
+    """A remembered answer is returned without touching the LLM or the rate limit
+    (neither costs anything then); otherwise the limit applies and the answer is made."""
+    key = make_key(request.question, request.schema_ddl, request.dialect, LLM_MODEL)
+    remembered = cache.get(key)
+    if remembered is not None:
+        response.headers["X-Cache"] = "HIT"
+        return remembered.model_copy(deep=True)
+
+    limiter.enforce(http_request)
+    result = _generate(request)
+    response.headers["X-Cache"] = "MISS"
+    if result.guardrail_blocked or result.confidence.overall >= MIN_CACHEABLE_CONFIDENCE:
+        cache.put(key, result.model_copy(deep=True))
+    return result
+
+
+def _generate(request: GenerateRequest) -> GenerateResponse:
     """Generate SQL for a question, with or without a schema. The SQL is never
     executed (there is no database), so the hallucination check is static.
 

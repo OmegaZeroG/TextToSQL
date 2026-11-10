@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.cache import ResponseCache
 from app.rate_limit import RateLimiter
 from tests.helpers import FakeLLM
 
@@ -24,4 +25,6 @@ def api(monkeypatch):
     monkeypatch.setattr(main, "get_llm_provider", lambda: harness.llm)
     # Limits are off here so tests can make as many calls as they like; test_rate_limit.py turns them on.
     monkeypatch.setattr(main, "limiter", RateLimiter(0, 60, 0, 3600))
+    # Many tests repeat one question with different scripted answers, so the cache is off here.
+    monkeypatch.setattr(main, "cache", ResponseCache(0, 0))
     return harness
