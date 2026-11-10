@@ -1,21 +1,13 @@
-import time
-
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import history
-from app.config import CORS_ORIGINS, MAX_ROW_LIMIT
-from app.db import run_query
+from app.config import CORS_ORIGINS, RATE_LIMIT_PER_HOUR, RATE_LIMIT_PER_MINUTE, TRUSTED_PROXY_HOPS
 from app.guardrails import check_sql
 from app.llm.factory import get_llm_provider
 from app.models import (
-    ConfidenceBreakdown,
     GenerateConfidence,
     GenerateRequest,
     GenerateResponse,
-    HistoryEntry,
-    QueryRequest,
-    QueryResponse,
     SchemaAnalyzeRequest,
     SchemaAnalyzeResponse,
     SchemaColumn,
@@ -23,7 +15,7 @@ from app.models import (
     SchemaUpdateRequest,
     SchemaUpdateResponse,
 )
-from app.schema_introspection import format_schema_for_prompt, introspect_schema
+from app.rate_limit import RateLimiter
 from app.schema_parser import (
     DIALECTS,
     ParsedSchema,
@@ -32,16 +24,58 @@ from app.schema_parser import (
     apply_schema_change,
     parse_ddl,
 )
-from app.schema_validation import check_sql_against_schema
-from app.sql_generation import generate_sql, generate_sql_for_schema, generate_sql_without_schema
+from app.sql_generation import generate_sql_for_schema, generate_sql_without_schema, repair_sql
+from app.validation import back_translate_and_score, compute_confidence
+from app.verification import Verdict, verify_sql
 
 # Without a schema the model is guessing table and column names, so the answer
 # can't honestly be rated above "medium" however clean it looks.
 NO_SCHEMA_CONFIDENCE_CAP = 0.6
-from app.validation import back_translate_and_score, compute_confidence, result_sanity_check
+
+# Rounds of "tell the model what the checks found and ask for a fix". Each round
+# costs one LLM call, so this is small; a repair is only accepted if it has fewer
+# problems than the draft it replaces.
+MAX_REPAIR_ATTEMPTS = 2
+
+
+def _brief(message: str) -> str:
+    """First sentence of a problem message, for the one-line note shown to the user."""
+    first = message.split(". ")[0].rstrip(".")
+    return first if len(first) <= 200 else first[:197] + "..."
+
+
+def _try_repair(
+    llm,
+    request: GenerateRequest,
+    schema_ddl: str | None,
+    schema: ParsedSchema | None,
+    sql: str,
+    problems: list[str],
+) -> tuple[str, dict, Verdict] | None:
+    """One repair round. Returns the repaired (sql, model output, verdict), or None
+    when the model fails, refuses, or hands back something the guardrail blocks."""
+    try:
+        fixed = repair_sql(llm, request.question, schema_ddl, request.dialect, sql, problems)
+    except Exception:
+        return None
+    candidate = fixed.get("sql")
+    if fixed.get("ambiguous") or fixed.get("unanswerable_reason") or not isinstance(candidate, str):
+        return None
+    guardrail = check_sql(candidate)
+    if not guardrail.allowed:
+        return None
+    return guardrail.sql, fixed, verify_sql(guardrail.sql, schema, request.dialect)
+
+limiter = RateLimiter(RATE_LIMIT_PER_MINUTE, 60, RATE_LIMIT_PER_HOUR, 3600, TRUSTED_PROXY_HOPS)
+
+
+def rate_limit(request: Request) -> None:
+    # Looked up at call time so tests can swap the limiter.
+    limiter.enforce(request)
+
 
 app = FastAPI(
-    title="Text-to-SQL with Guardrails",
+    title="plainquery",
     description="Natural language to SQL with safety guardrails and hallucination detection.",
     version="1.0.0",
 )
@@ -59,18 +93,12 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/v1/schema")
-def get_schema():
-    tables = introspect_schema()
-    return {"schema": format_schema_for_prompt(tables), "tables": [t.name for t in tables]}
-
-
 @app.get("/v1/dialects")
 def list_dialects():
     return [{"id": key, "label": label} for key, label in DIALECTS.items()]
 
 
-@app.post("/v1/schema/analyze", response_model=SchemaAnalyzeResponse)
+@app.post("/v1/schema/analyze", response_model=SchemaAnalyzeResponse, dependencies=[Depends(rate_limit)])
 def analyze(request: SchemaAnalyzeRequest):
     """Bring-your-own-schema, step 1: accept DDL or plain text and return the
     structured schema we understood, so the user can confirm it before asking."""
@@ -92,10 +120,10 @@ def analyze(request: SchemaAnalyzeRequest):
     )
 
 
-@app.post("/v1/generate", response_model=GenerateResponse)
+@app.post("/v1/generate", response_model=GenerateResponse, dependencies=[Depends(rate_limit)])
 def generate(request: GenerateRequest):
-    """Generate SQL for a question, with or without a schema. Nothing is executed
-    (there is no data), so the hallucination check is static.
+    """Generate SQL for a question, with or without a schema. The SQL is never
+    executed (there is no database), so the hallucination check is static.
 
     With a schema: does the SQL only use tables and columns that exist in it?
     Without one: the model assumes a schema and tells us what it assumed; we check
@@ -142,7 +170,7 @@ def generate(request: GenerateRequest):
         raise HTTPException(status_code=502, detail="LLM generation failed: model output is missing a 'sql' string")
 
     explanation = generated.get("explanation", "")
-    guardrail = check_sql(generated["sql"], for_execution=False)
+    guardrail = check_sql(generated["sql"])
     if not guardrail.allowed:
         return GenerateResponse(
             question=request.question,
@@ -164,7 +192,7 @@ def generate(request: GenerateRequest):
     assumptions: list[str] = []
 
     if schema is not None:
-        check = check_sql_against_schema(sql, schema, request.dialect)
+        checked_against, checked_ddl = schema, schema_text
     else:
         assumed_text = generated.get("assumed_schema")
         try:
@@ -175,7 +203,7 @@ def generate(request: GenerateRequest):
         except SchemaParseError:
             assumed = None
             warnings.append("The assumed schema couldn't be read, so the SQL wasn't checked against it.")
-        check = check_sql_against_schema(sql, assumed, request.dialect)
+        checked_against, checked_ddl = assumed, assumed_ddl
         raw_assumptions = generated.get("assumptions")
         if isinstance(raw_assumptions, list):
             assumptions = [a for a in raw_assumptions if isinstance(a, str)][:8]
@@ -184,10 +212,32 @@ def generate(request: GenerateRequest):
             "Add your schema to have the SQL checked against your real tables."
         )
 
-    warnings = list(check.problems) + warnings
+    # Verify, and give the model a chance to fix what the checks found. A query
+    # that merely parses is not treated as correct.
+    verdict = verify_sql(sql, checked_against, request.dialect)
+    corrected: list[str] = []
+    for _ in range(MAX_REPAIR_ATTEMPTS):
+        if verdict.clean:
+            break
+        repaired = _try_repair(llm, request, checked_ddl, checked_against, sql, verdict.errors)
+        if repaired is None:
+            break
+        new_sql, new_generated, new_verdict = repaired
+        if len(new_verdict.errors) >= len(verdict.errors):
+            break  # the "fix" isn't better; keep the draft and show its problems honestly
+        corrected += verdict.errors
+        sql, generated, verdict = new_sql, new_generated, new_verdict
+    explanation = generated.get("explanation", explanation)
+
+    notes = list(warnings)
+    warnings = list(verdict.errors) + list(verdict.warnings)
+    if corrected:
+        warnings.append(f"Corrected automatically after checks found: {_brief(corrected[0])}")
+    warnings += notes
+
     alignment = back_translate_and_score(llm, request.question, sql)
     overall = compute_confidence(
-        generated.get("confidence", 3), alignment, check.syntax_valid and check.schema_ok
+        generated.get("confidence", 3), alignment, verdict.syntax_valid and verdict.schema_ok and verdict.logic_ok
     )
     if schema is None:
         overall = min(overall, NO_SCHEMA_CONFIDENCE_CAP)
@@ -201,11 +251,12 @@ def generate(request: GenerateRequest):
         dialect=request.dialect,
         sql=sql,
         explanation=explanation,
-        tables_used=check.tables_used,
+        tables_used=verdict.tables_used,
         confidence=GenerateConfidence(
-            syntax_valid=check.syntax_valid,
+            syntax_valid=verdict.syntax_valid,
             back_translation_alignment=alignment,
-            schema_check_passed=check.schema_ok,
+            schema_check_passed=verdict.schema_ok,
+            logic_check_passed=verdict.logic_ok,
             overall=overall,
         ),
         warnings=warnings,
@@ -215,7 +266,7 @@ def generate(request: GenerateRequest):
     )
 
 
-@app.post("/v1/schema/update", response_model=SchemaUpdateResponse)
+@app.post("/v1/schema/update", response_model=SchemaUpdateResponse, dependencies=[Depends(rate_limit)])
 def update_schema(request: SchemaUpdateRequest):
     """Add to or change a saved schema using plain English or SQL. All or nothing:
     on success you get the full updated schema plus exactly what changed; on
@@ -238,85 +289,4 @@ def update_schema(request: SchemaUpdateRequest):
             for t in updated.parsed.tables
         ],
         changes=updated.changes,
-    )
-
-
-@app.get("/v1/history", response_model=list[HistoryEntry])
-def get_history(limit: int = 50):
-    return history.get_all(limit)
-
-
-@app.post("/v1/query", response_model=QueryResponse)
-def query(request: QueryRequest):
-    llm = get_llm_provider()
-    tables = introspect_schema()
-
-    try:
-        generated = generate_sql(llm, request.question, tables)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"LLM generation failed: {exc}") from exc
-
-    if generated.get("ambiguous"):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "This question has multiple possible interpretations.",
-                "interpretations": generated.get("interpretations", []),
-            },
-        )
-
-    sql = generated["sql"]
-    guardrail_result = check_sql(sql)
-
-    if not guardrail_result.allowed:
-        return QueryResponse(
-            question=request.question,
-            sql=sql,
-            explanation=generated.get("explanation", ""),
-            columns=[],
-            rows=[],
-            row_count=0,
-            execution_time_ms=0,
-            confidence=ConfidenceBreakdown(
-                syntax_valid=False, back_translation_alignment=0, result_sanity_passed=False, overall=0,
-            ),
-            guardrail_blocked=True,
-            block_reason=guardrail_result.reason,
-        )
-
-    safe_sql = guardrail_result.sql
-
-    start = time.perf_counter()
-    try:
-        df = run_query(safe_sql, MAX_ROW_LIMIT)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Query execution failed: {exc}") from exc
-    execution_time_ms = (time.perf_counter() - start) * 1000
-
-    sanity_passed, warnings = result_sanity_check(df, MAX_ROW_LIMIT)
-    alignment_score = back_translate_and_score(llm, request.question, safe_sql)
-    overall_confidence = compute_confidence(
-        generated.get("confidence", 3), alignment_score, sanity_passed,
-    )
-
-    if overall_confidence < 0.5:
-        warnings.append("Low confidence: the generated SQL may not accurately answer your question. Review before trusting these results.")
-
-    history.record(request.question, safe_sql, len(df), overall_confidence)
-
-    return QueryResponse(
-        question=request.question,
-        sql=safe_sql,
-        explanation=generated.get("explanation", ""),
-        columns=list(df.columns),
-        rows=df.values.tolist(),
-        row_count=len(df),
-        execution_time_ms=round(execution_time_ms, 2),
-        confidence=ConfidenceBreakdown(
-            syntax_valid=True,
-            back_translation_alignment=alignment_score,
-            result_sanity_passed=sanity_passed,
-            overall=overall_confidence,
-        ),
-        warnings=warnings,
     )

@@ -1,48 +1,9 @@
 import json
 
-import pandas as pd
 import pytest
 
-from app.validation import back_translate_and_score, compute_confidence, result_sanity_check
+from app.validation import back_translate_and_score, compute_confidence
 from tests.helpers import FakeLLM, alignment
-
-
-class TestResultSanityCheck:
-    def test_clean_result_passes_without_warnings(self):
-        passed, warnings = result_sanity_check(pd.DataFrame({"city": ["a", "b"], "n": [1, 2]}), 1000)
-        assert passed
-        assert warnings == []
-
-    def test_empty_result_warns_but_still_passes(self):
-        passed, warnings = result_sanity_check(pd.DataFrame({"n": []}), 1000)
-        assert passed
-        assert any("zero rows" in w for w in warnings)
-
-    def test_result_at_the_row_limit_is_flagged_as_truncated(self):
-        passed, warnings = result_sanity_check(pd.DataFrame({"n": range(5)}), 5)
-        assert not passed
-        assert any("truncated" in w for w in warnings)
-
-    @pytest.mark.parametrize("column", ["quantity", "total_spend", "order_count", "unit_price", "amount"])
-    def test_negative_values_in_count_like_columns_are_flagged(self, column):
-        passed, warnings = result_sanity_check(pd.DataFrame({column: [-1, 2]}), 1000)
-        assert not passed
-        assert any("negative" in w for w in warnings)
-
-    def test_negative_values_in_unrelated_columns_are_fine(self):
-        passed, _ = result_sanity_check(pd.DataFrame({"temperature": [-5, 2]}), 1000)
-        assert passed
-
-    def test_null_heavy_column_suggests_a_bad_join(self):
-        df = pd.DataFrame({"a": [1, 2, 3, 4, 5], "b": [None, None, None, None, 1]})
-        passed, warnings = result_sanity_check(df, 1000)
-        assert not passed
-        assert any("NULL" in w for w in warnings)
-
-    def test_tiny_results_are_not_judged_on_null_ratio(self):
-        df = pd.DataFrame({"a": [1, 2], "b": [None, None]})
-        passed, _ = result_sanity_check(df, 1000)
-        assert passed
 
 
 class TestComputeConfidence:
@@ -53,7 +14,7 @@ class TestComputeConfidence:
         # 0.2 * (3/5) + 0.5 * 0.5 + 0.3 * 0.4
         assert compute_confidence(3, 0.5, False) == pytest.approx(0.49)
 
-    def test_failed_sanity_check_costs_eighteen_points(self):
+    def test_failed_static_checks_cost_eighteen_points(self):
         assert compute_confidence(5, 1.0, True) - compute_confidence(5, 1.0, False) == pytest.approx(0.18)
 
     def test_back_translation_dominates_self_reported_confidence(self):

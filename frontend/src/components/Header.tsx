@@ -9,6 +9,9 @@ interface Props {
   onRetry: () => void;
   theme: Theme;
   onToggleTheme: () => void;
+  onOpenGuide: () => void;
+  /** Show a small "new" dot on the guide button until it has been opened once. */
+  guideHint?: boolean;
 }
 
 const STATUS: Record<ServerState, { label: string; dot: string; showOnPhone: boolean }> = {
@@ -18,7 +21,7 @@ const STATUS: Record<ServerState, { label: string; dot: string; showOnPhone: boo
   offline: { label: "Can't reach the server", dot: "bg-destructive", showOnPhone: true },
 };
 
-export default function Header({ server, onRetry, theme, onToggleTheme }: Props) {
+export default function Header({ server, onRetry, theme, onToggleTheme, onOpenGuide, guideHint = false }: Props) {
   const status = STATUS[server];
   const dark = theme === "dark";
 
@@ -47,6 +50,13 @@ export default function Header({ server, onRetry, theme, onToggleTheme }: Props)
               Retry
             </Button>
           )}
+          <Button variant="ghost" size="sm" onClick={onOpenGuide} aria-label="Start the guided tour" className="relative">
+            <Icon name="help" />
+            <span className="hidden sm:inline">Guide</span>
+            {guideHint && (
+              <span className="absolute right-1.5 top-1.5 size-2 animate-soft-pulse rounded-full bg-primary" aria-hidden="true" />
+            )}
+          </Button>
           <Button
             variant="ghost"
             size="icon"

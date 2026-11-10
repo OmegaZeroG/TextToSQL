@@ -95,6 +95,14 @@ const PATHS = {
       <path d="M12 7v5l4 2" />
     </>
   ),
+  help: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.2" />
+      <path d="M12 17.5h.01" />
+    </>
+  ),
+  arrowLeft: <path d="M19 12H5m7 7-7-7 7-7" />,
   refresh: (
     <>
       <path d="M21 12a9 9 0 0 0-15-6.7L3 8" />

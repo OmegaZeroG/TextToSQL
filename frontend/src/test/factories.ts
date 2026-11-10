@@ -11,6 +11,7 @@ export function makeResponse(overrides: Partial<GenerateResponse> = {}): Generat
       syntax_valid: true,
       back_translation_alignment: 0.98,
       schema_check_passed: true,
+      logic_check_passed: true,
       overall: 0.97,
     },
     warnings: [],

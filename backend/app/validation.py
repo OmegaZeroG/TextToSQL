@@ -1,17 +1,15 @@
-"""Hallucination detection: catches SQL that is syntactically valid and
-executes cleanly but doesn't actually answer the question asked.
+"""Hallucination detection: catches SQL that is syntactically valid but doesn't
+actually answer the question asked.
 
-Three independent signals feed the final confidence score:
-1. Back-translation alignment  - ask the LLM what question the SQL answers,
-   compare it to the original question.
-2. Result sanity checks        - do row/column counts and value ranges look
-   plausible, or does this smell like a broken JOIN (e.g. row explosion)?
-3. Guardrail/syntax validity   - did the query pass static checks at all.
+Signals that feed the confidence score:
+1. Back-translation alignment: ask the LLM what question the SQL answers and
+   compare that to the original question (this module).
+2. Static checks: does the SQL parse in the chosen dialect, and does it only use
+   tables and columns that exist in the schema (schema_validation.py).
+3. The model's own confidence, the least trustworthy signal and so weighted least.
 """
 import json
 import re
-
-import pandas as pd
 
 from app.llm.base import LLMProvider
 
@@ -51,37 +49,13 @@ def _strip_fences(text: str) -> str:
     return re.sub(r"^```(json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
 
 
-def result_sanity_check(df: pd.DataFrame, row_limit: int) -> tuple[bool, list[str]]:
-    warnings = []
-    passed = True
-
-    if len(df) == 0:
-        warnings.append("Query returned zero rows — verify this is expected, not a filter/JOIN bug.")
-
-    if len(df) >= row_limit:
-        warnings.append(f"Result was truncated at the {row_limit}-row limit; totals/aggregates may be incomplete.")
-        passed = False
-
-    for col in df.select_dtypes(include="number").columns:
-        if (df[col] < 0).any() and any(k in col.lower() for k in ("count", "quantity", "total", "amount", "price")):
-            warnings.append(f"Column '{col}' contains negative values, which is implausible for this field.")
-            passed = False
-
-    null_heavy = [c for c in df.columns if df[c].isna().mean() > 0.5 and len(df) > 3]
-    if null_heavy:
-        warnings.append(f"Columns {null_heavy} are more than 50% NULL — possible bad JOIN.")
-        passed = False
-
-    return passed, warnings
-
-
 def compute_confidence(
     llm_reported_confidence: int,
     back_translation_score: float,
-    sanity_passed: bool,
+    static_checks_passed: bool,
 ) -> float:
     """Weighted blend: the model's self-reported confidence is the least
     trustworthy signal, so it gets the smallest weight."""
     self_reported = llm_reported_confidence / 5.0
-    sanity = 1.0 if sanity_passed else 0.4
-    return round(0.2 * self_reported + 0.5 * back_translation_score + 0.3 * sanity, 3)
+    static = 1.0 if static_checks_passed else 0.4
+    return round(0.2 * self_reported + 0.5 * back_translation_score + 0.3 * static, 3)

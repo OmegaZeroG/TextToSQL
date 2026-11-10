@@ -41,6 +41,23 @@ describe("ConfidenceGauge", () => {
     expect(screen.getByText("Flagged")).toBeInTheDocument();
   });
 
+  it("shows the logic check, and flags it when it fails", () => {
+    gauge(0.7);
+    expect(screen.getByText("Passed logic checks")).toBeInTheDocument();
+    expect(screen.queryByText("Flagged")).not.toBeInTheDocument();
+  });
+
+  it("flags a failed logic check", () => {
+    gauge(0.6, { logic_check_passed: false });
+    expect(screen.getByText("Passed logic checks")).toBeInTheDocument();
+    expect(screen.getByText("Flagged")).toBeInTheDocument();
+  });
+
+  it("hides the logic row when the server is too old to report it", () => {
+    gauge(0.9, { logic_check_passed: undefined });
+    expect(screen.queryByText("Passed logic checks")).not.toBeInTheDocument();
+  });
+
   it("flags invalid syntax", () => {
     gauge(0.2, { syntax_valid: false });
     expect(screen.getByText("No")).toBeInTheDocument();

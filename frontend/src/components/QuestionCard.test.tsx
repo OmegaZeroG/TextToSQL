@@ -75,6 +75,13 @@ describe("QuestionCard", () => {
       expect(props.onSubmit).toHaveBeenCalledTimes(1);
     });
 
+    it("submits with Ctrl+Enter even when focus is on another control (e.g. a guide button)", async () => {
+      const { props, user } = setup({ question: "q" });
+      screen.getByRole("button", { name: /generate sql/i }).focus();
+      await user.keyboard("{Control>}{Enter}{/Control}");
+      expect(props.onSubmit).toHaveBeenCalledTimes(1);
+    });
+
     it("submits with Cmd+Enter", async () => {
       const { props, user } = setup({ question: "q" });
       await user.click(box());

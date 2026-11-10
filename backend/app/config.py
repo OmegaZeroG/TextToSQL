@@ -1,14 +1,8 @@
 import os
-from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
-
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5433/texttosql"
-)
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
@@ -18,7 +12,19 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-MAX_ROW_LIMIT = int(os.getenv("MAX_ROW_LIMIT", "1000"))
-MAX_SUBQUERY_DEPTH = int(os.getenv("MAX_SUBQUERY_DEPTH", "3"))
-
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+
+
+def _int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except ValueError:
+        return default
+
+
+# Requests that reach the LLM are limited so one visitor can't use up a free quota.
+# 0 turns a limit off.
+RATE_LIMIT_PER_MINUTE = _int("RATE_LIMIT_PER_MINUTE", 10)  # per client address
+RATE_LIMIT_PER_HOUR = _int("RATE_LIMIT_PER_HOUR", 120)  # across everyone
+# How many reverse proxies sit in front of the app (Render: 1). 0 ignores X-Forwarded-For.
+TRUSTED_PROXY_HOPS = _int("TRUSTED_PROXY_HOPS", 1)

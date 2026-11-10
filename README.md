@@ -1,157 +1,269 @@
-# Text-to-SQL with Guardrails and Hallucination Detection
+# plainquery: text to SQL, checked before you trust it
 
-Translates natural-language questions into SQL against a real Postgres
-database, blocks anything destructive before it can execute, and scores
-its own answers for correctness instead of presenting every result with
-false confidence.
+Describe your tables (plain English or `CREATE TABLE`), ask a question, get SQL
+for your database dialect, plus a confidence score that says how far to trust it.
 
-Built to run and deploy for **$0** — a free LLM tier, a free Postgres tier,
-and free hosting for both frontend and backend. No card required anywhere.
+There is **no database behind it**. Your schema lives in your browser and travels
+with each request; the backend never connects to anything and never runs a query.
+The whole thing deploys free: a Groq key, a Render web service and a Vercel site.
 
-## Why this exists
+<p align="center">
+  <img src="docs/screenshot-light.jpg" width="49%" alt="Result with no schema: SQL, explanation and a capped Medium confidence" />
+  <img src="docs/screenshot-dark.jpg" width="49%" alt="Dark mode with a saved schema: High confidence" />
+</p>
 
-Text-to-SQL is one of the highest-value LLM applications in the enterprise,
-and most demos stop at "it generates SQL." This project treats that as the
-easy 80%. The other 20% — the part a compliance team actually cares about —
-is:
+## What it does
 
-- **Guardrails**: every generated query is statically checked (blocks DDL/DML,
-  caps nesting depth, injects a row limit) and then executed inside an
-  explicit `READ ONLY` transaction as a second line of defense.
-- **Hallucination detection**: the SQL is back-translated into a plain-English
-  question and compared against the original — divergence means the query
-  probably doesn't answer what was asked, even if it runs without error.
-- **Confidence scoring**: every response ships with a transparent breakdown
-  (self-reported confidence, back-translation alignment, result sanity checks)
-  instead of a single opaque number.
+- **Bring your own schema, optionally.** Paste DDL or describe tables in English
+  ("customers(id, name), orders(id, customer_id, total)"). DDL is parsed
+  deterministically; only English falls back to the LLM. Add to or change the saved
+  schema later in plain English or SQL; a change is atomic and shows a diff, and
+  nothing is removed unless you asked for a removal.
+- **Or ask with no schema at all.** The model assumes one, tells you what it
+  assumed, and you can adopt or correct it with a click. Confidence is capped at
+  60% because the names are guesses.
+- **Seven dialects:** PostgreSQL, MySQL, SQLite, SQL Server, Oracle, BigQuery, Snowflake.
+- **Refuses to answer with anything destructive.** A request like "delete all
+  cancelled orders" comes back as a blocked statement, not as SQL to paste.
+- **Checks its own work and fixes it.** Every answer is verified (syntax, your schema,
+  logic rules, a trial run on test data) and sent back to the model for repair when
+  something is wrong, so errors like `= NULL`, unguarded division or a month rebuilt as
+  `2025-00` are caught before you see them.
+- **Says so when it can't answer.** Ambiguous questions return the possible
+  readings; questions your schema can't answer say what's missing.
+- **Confidence you can read.** Every answer carries a breakdown, not one opaque number.
+- **A five-step guided tour** behind the Guide button in the header: a spotlight
+  and a small card that glide from the schema to the question, dialect, generate
+  button and result. Keyboard-friendly, and it docks to the bottom on phones.
+- **History, dark mode, mobile layout, loading states, cold-start messaging**, all
+  stored in `localStorage`.
 
-## Architecture
+<p align="center">
+  <img src="docs/screenshot-mobile.jpg" width="30%" alt="Mobile layout with an expanded schema" />
+</p>
+
+## How an answer is produced
 
 ```
-┌───────────────┐      question       ┌──────────────────┐
-│  React (Vite)  │ ──────────────────> │     FastAPI       │
-│    frontend    │ <────────────────── │     backend       │
-└───────────────┘   SQL + results +    └──────┬───────────┘
-                      confidence               │
-                                                │ 1. schema introspection
-                                                │ 2. LLM generates SQL (Groq)
-                                                │ 3. guardrail check
-                                                │ 4. read-only execution
-                                                │ 5. back-translation + sanity check
-                                                ▼
-                                        ┌──────────────────┐
-                                        │     PostgreSQL     │
-                                        │  seeded e-commerce  │
-                                        │      dataset        │
-                                        └──────────────────┘
+ browser                              FastAPI (stateless)
+┌──────────────┐  question + schema  ┌──────────────────────────────────────────────────┐
+│ React + Vite │ ──────────────────> │ 1. parse the schema (sqlglot)                    │
+│              │                     │ 2. LLM writes SQL, told this dialect's native    │
+│ schema,      │                     │    date functions and the correctness rules      │
+│ history and  │                     │ 3. guardrail: single read-only SELECT?           │
+│ theme stay   │                     │ 4. verify: syntax -> schema -> logic -> trial run│
+│ here         │                     │ 5. problems found? ask the LLM to repair (x2)    │
+│              │ <────────────────── │ 6. back-translate the final SQL and judge it     │
+└──────────────┘  SQL + confidence   └──────────────────────────────────────────────────┘
 ```
+
+### Design decisions
+
+**Your data is never touched.** The service has no connection to your database and
+stores nothing. The guardrail exists so a tool never offers `DROP TABLE` as its
+answer to a question that someone will copy into a console: anything that isn't one
+`SELECT`/`WITH` statement is blocked (DML, DDL, stacked statements, writes hidden in
+a CTE). The model is told to translate literally and not refuse, so the block is
+deterministic and testable rather than depending on the model's mood.
+
+**Parsing is not correctness.** SQL can parse, use only real columns, and still
+compare to NULL with `=`, divide by a column that is sometimes zero, or rebuild a
+month number into the month `00`. Every generated query goes through four stages:
+
+| Stage | What it catches |
+| --- | --- |
+| Syntax and schema (`sqlglot`) | invalid syntax in the chosen dialect, invented tables and columns, `LIMIT` in SQL Server/Oracle |
+| Logic rules (`sql_checks.py`) | `= NULL`, unguarded division, ungrouped columns, aggregates in `WHERE`, window functions in `WHERE`/`GROUP BY`, unordered `ROW_NUMBER`/`LAG`, SELECT aliases used where the dialect forbids them, joins with no condition, joins off the schema's foreign keys, impossible dates (`2025-02-30`), month numbers decoded with `% 12`, `YYYYMM` integers used for consecutive logic, streak queries that number duplicate rows, date arithmetic that doesn't mean days in that dialect |
+| Dialect rules | functions and syntax that belong to another database (about 15 per dialect: `DATE_TRUNC` in MySQL, `YEAR()` in PostgreSQL, `EXTRACT` in SQL Server, `AS` before a table alias in Oracle, ...) |
+| Trial run | the schema is turned into a throwaway in-memory SQLite database with deterministic data (year-end dates, repeats, NULLs, zeros, childless parents) and the query is run against it. Errors count, and so does a result containing a date that cannot exist |
+
+The rules are structural checks over the parsed query, not patterns for particular
+questions, so they apply to SQL nobody has written yet. A rule only fires when it is
+confident; a missed issue is better than crying wolf.
+
+**Repair, not just reporting.** When a stage finds errors, the model is sent the
+question, its own SQL and the exact problems, and asked to fix them (up to two rounds,
+each costing one LLM call). A repair is accepted only if it has fewer problems than the
+draft and still passes the guardrail; otherwise the draft is kept and its problems are
+shown, with lower confidence. The user is told when something was corrected.
+
+**Prevention comes first.** The prompt tells the model how *this* dialect does the
+things that go wrong most (month buckets, shifting dates by months, row limits) and
+teaches the safe recipe for consecutive periods: reduce to one row per entity and
+period, number those, group by the period shifted back by its row number. Those recipes
+are generated from the same templates the tests use, and a test asserts they pass every
+rule in every dialect, so the guidance and the validator cannot drift apart.
+
+**Confidence** = `0.2 × model confidence + 0.5 × back-translation alignment + 0.3 × checks`
+(checks score 1.0 if syntax, schema and logic all pass, 0.4 if not). The model's
+self-assessment gets the smallest weight because it is the least reliable. With no
+schema the result is capped at 0.6.
+
+## API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | liveness (used by Render) |
+| `GET` | `/v1/dialects` | supported dialects |
+| `POST` | `/v1/schema/analyze` | turn DDL or plain English into a structured schema |
+| `POST` | `/v1/schema/update` | apply a plain-English or SQL change to a schema |
+| `POST` | `/v1/generate` | question (+ optional schema) to SQL and confidence |
+
+```bash
+curl -X POST http://localhost:8000/v1/generate -H "Content-Type: application/json" -d '{
+  "question": "Top 5 customers by total spend",
+  "schema_ddl": "CREATE TABLE customers (id INT PRIMARY KEY, name TEXT); CREATE TABLE orders (id INT PRIMARY KEY, customer_id INT REFERENCES customers(id), total_amount DECIMAL);",
+  "dialect": "postgres"
+}'
+```
+
+The response has `sql`, `explanation`, `tables_used`, `warnings`, `guardrail_blocked`
+and `confidence` (`syntax_valid`, `back_translation_alignment`, `schema_check_passed`,
+`overall`). Ambiguous or unanswerable questions return HTTP 422 with
+`detail.kind` set to `ambiguous` or `unanswerable`. Interactive docs are at `/docs`.
 
 ## Tech stack
 
-| Layer | Choice |
-|---|---|
-| Backend | FastAPI (Python 3.11) |
-| LLM | Groq (Llama 3.3 70B) by default — pluggable OpenAI / Anthropic / Gemini |
-| Database | PostgreSQL, seeded with a synthetic multi-table e-commerce dataset |
-| ORM / introspection | SQLAlchemy |
-| Guardrails | `sqlparse` static analysis + `SET TRANSACTION READ ONLY` |
-| Frontend | React + TypeScript + Vite + Tailwind CSS |
-| CI | GitHub Actions running the golden-query eval suite on every PR |
-| Containerization | Docker + docker-compose |
+- **Backend:** Python 3.11+, FastAPI, Pydantic v2, `sqlglot` (DDL parsing and schema-aware validation), `sqlparse` (guardrail)
+- **LLM:** Groq `openai/gpt-oss-120b` by default behind a small provider interface; OpenAI, Anthropic and Gemini are drop-in via `LLM_PROVIDER`
+- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, no UI kit
+- **Tests:** pytest, Vitest + Testing Library, GitHub Actions
 
-## Local setup
+## Run it locally
 
-**1. Backend + database**
+You need a free [Groq API key](https://console.groq.com/keys).
 
 ```bash
-cp .env.example .env   # add your free Groq API key (https://console.groq.com)
-docker-compose up postgres -d
-python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-pip install -r backend/requirements.txt
-python data/seed.py
-uvicorn app.main:app --app-dir backend --reload
+cp .env.example .env          # then set GROQ_API_KEY
+python -m venv .venv
+.venv/Scripts/activate        # macOS/Linux: source .venv/bin/activate
+pip install -r backend/requirements-dev.txt
+cd backend && uvicorn app.main:app --reload
 ```
-
-**2. Frontend**
 
 ```bash
-cd frontend
-cp .env.example .env
-npm install
-npm run dev
+cd frontend && npm install && npm run dev
 ```
 
-Or run the whole stack with Docker Compose:
-
-```bash
-docker-compose up --build
-```
+Open http://localhost:5173. On Windows, `.\scripts\local.ps1 backend|frontend|test|eval`
+wraps the same commands (`-Port 8010` to change the API port). Or run both with
+`docker compose up --build`.
 
 ## Tests
 
-Two layers, because they answer different questions:
-
-| Layer | Needs | Answers |
-|---|---|---|
-| `pytest` (backend/tests) | nothing — LLM and DB are faked | Does the code do what it claims, deterministically? Guardrails, confidence math, prompt construction, every API failure mode, the eval harness's own comparison logic |
-| Golden-query eval | live LLM + seeded Postgres | How *accurate* is the model on real questions? |
-
 ```bash
-pip install -r backend/requirements-dev.txt
-cd backend && pytest
+cd backend && pytest        # 632 tests, no network, no LLM key needed
+cd frontend && npm test     # 220 tests
 ```
 
-`tests/test_db_integration.py` runs against whatever `DATABASE_URL` points at and skips itself when no database is reachable. It proves the database refuses writes even when the guardrail layer is bypassed entirely. CI runs everything on every push and PR; the live-LLM eval additionally runs on PRs.
+The backend suite runs the whole request pipeline against a scripted fake LLM, so
+guardrails, schema parsing and updates, the logic and dialect rules, the repair loop and
+the confidence math are all tested offline. Every rule is tested both ways: the broken
+pattern is caught, and the correct way to write the same thing is left alone.
 
-## Running the eval suite
+The consecutive-months scenarios (`tests/test_streaks.py`) run a reference query
+against real rows and check the answers worked out by hand: Jan-Feb-Mar, a missing
+month, Nov-Dec-Jan across a year end, ten orders in one month counting once, two
+streaks (longest wins), equal streaks (earliest wins), a leap year. The broken
+patterns run on the same data to show they really give wrong answers.
+
+The eval's own comparison logic and golden dataset are tested too (every expected
+query must run, return rows and pass the product's own checks).
+
+## Eval
+
+`eval/run_eval.py` sends 14 golden questions to a live API, the same way the UI
+does, and grades them. The sample e-commerce schema (`eval/sample_db.py`) is loaded
+into a throwaway in-memory SQLite database that exists only inside the eval: both
+the generated SQL and the hand-written expected SQL run there and their rows are
+compared (ignoring column names, column order and row order). Guardrail,
+ambiguity and unanswerable cases check the API's refusal behaviour instead. Two of
+the questions target the bug classes the verification pipeline exists for: a
+consecutive-months streak (with hand-built customers for duplicates, a gap, a tie and a
+year end) and a percentage that needs a guarded denominator.
 
 ```bash
 python eval/run_eval.py --api-url http://localhost:8000
 ```
 
-Checks execution-match accuracy on 10 hand-written golden queries, plus
-that a disguised `DELETE` request is guardrail-blocked and that a genuinely
-ambiguous question ("What is the revenue?") triggers a clarification
-request instead of a guess.
+Results on 2026-11-10 with `openai/gpt-oss-120b`, two runs of the 14 questions:
 
-## Deploying for free
+| Run | Passed | Notes |
+| --- | --- | --- |
+| 1 | 11 / 14 | q6 answered instead of asking; q10's answer key had an arbitrary tie; q14 never said how statuses are spelled |
+| 2 | 13 / 14 | after making q10 and q14 unambiguous; only q6 missed |
 
-**Database → Neon**
-1. Create a free project at [neon.tech](https://neon.tech) (serverless Postgres, no card).
-2. Copy the connection string it gives you — use it as `DATABASE_URL` below (it already includes `?sslmode=require`).
+The two answer-key problems were mine, not the model's. The hand-built streak customers
+created a tie for the busiest month, and the golden SQL had no tie-break; and the model
+can't know the data stores `'cancelled'` in lowercase. Both questions now say what they mean.
+The streak question (consecutive months with duplicates, a gap, a tie and a year end) passed in both runs.
 
-**Backend → Render**
-1. Push this repo to GitHub.
-2. On [Render](https://render.com), New → Blueprint → connect the repo. It reads [`render.yaml`](render.yaml) (Docker runtime, `backend/Dockerfile`, `/health` check, free plan).
-3. When prompted, supply the two secrets: your Neon `DATABASE_URL` and `GROQ_API_KEY`.
-4. Free tier sleeps after 15 minutes idle and wakes on the next request (~30s cold start). On boot the container seeds the database only if it's empty (`seed.py --if-empty`), so wake-ups stay fast and data isn't dropped under live traffic.
+The remaining miss, q6 ("What is the revenue?"), is the model being inconsistent about whether
+to ask or answer: asked six times each, the earlier prompt asked 2 times and the current one 1.
+That difference is within noise. A few questions is a smoke test, not a benchmark, so treat the
+number as "works on a realistic schema", not as an accuracy rating. In CI the eval runs on pull
+requests and manual dispatch (it spends the Groq key), not on every push.
 
-**Frontend → Vercel**
-1. On [vercel.com](https://vercel.com), New Project → import this repo, root directory `frontend`.
-2. Framework preset: Vite. Add environment variable `VITE_API_URL = https://<your-render-service>.onrender.com`.
-3. Deploy — free, no sleep, no card.
+The free Groq tier has a daily token cap (200k for this model). The verification prompt
+is longer than before and a repair costs another call, so a request now uses a few
+thousand tokens, and a full eval run uses a large share of a day's allowance.
 
-**LLM → Groq**
-Free API key at [console.groq.com](https://console.groq.com), no card required. Swap `LLM_PROVIDER`/`LLM_MODEL`/the matching `*_API_KEY` in `.env` to use OpenAI, Anthropic, or Gemini instead.
+## Deploy for free
+
+1. **Backend on Render.** New, then Blueprint, pick this repo; it reads `render.yaml`.
+   Set one secret, `GROQ_API_KEY`. The free tier sleeps when idle, so the first
+   request after a quiet spell takes about a minute; the UI says so while it waits.
+2. **Frontend on Vercel.** Import the repo, set **Root Directory** to `frontend`,
+   and add `VITE_API_URL` = your Render URL.
+3. **Tighten CORS.** Set `CORS_ORIGINS` on Render to your Vercel URL
+   (it defaults to `*`).
+4. **Check the rate limits.** `RATE_LIMIT_PER_MINUTE` (per address) and
+   `RATE_LIMIT_PER_HOUR` (everyone) protect your Groq quota; set a value to `0` to turn
+   it off. `TRUSTED_PROXY_HOPS` is how many proxies sit in front of the app (`1` on
+   Render). If every visitor appears to share one address, the number is too high.
+   Over the limit, the API returns HTTP 429 with a `Retry-After` header and the UI shows
+   the message.
 
 ## Project layout
 
 ```
 backend/app/
-  main.py                 FastAPI routes
-  config.py                Env-driven settings
-  db.py                     Postgres access via SQLAlchemy, read-only transactions
-  schema_introspection.py   Extracts schema for the prompt, filters to relevant tables
-  sql_generation.py         Prompt construction + LLM call
-  guardrails.py             Static SQL safety checks
-  validation.py             Back-translation + result sanity checks (hallucination detection)
-  history.py                In-memory query history
-  llm/                      Provider abstraction (Groq/OpenAI/Anthropic/Gemini)
-backend/entrypoint.sh        Waits for Postgres, seeds it, then starts the API
-data/seed.py                 Generates the synthetic e-commerce dataset
-eval/                          Golden dataset + eval runner
-frontend/src/
-  App.tsx                    Top-level state and layout
-  api.ts                     Backend API client
-  components/                Schema sidebar, query form, results table, confidence badge, history
+  main.py               endpoints and the generate pipeline
+  schema_parser.py      DDL parsing, plain-English to DDL, atomic schema updates
+  schema_validation.py  dialect parse + unknown table/column detection
+  sql_checks.py         logic and dialect rules over the parsed query
+  sql_execution.py      throwaway SQLite trial run on generated test data
+  verification.py       syntax -> schema -> logic -> trial run, one verdict
+  dialect_guide.py      per-dialect date recipes and the rules given to the model
+  sql_generation.py     prompts for generation and repair
+  guardrails.py         single read-only SELECT check
+  validation.py         back-translation judge and confidence formula
+  llm/                  provider interface + Groq, OpenAI, Anthropic, Gemini
+backend/tests/          pytest suite
+frontend/src/           React app (components, hooks, api, localStorage)
+eval/                   golden dataset, sample database, eval runner
+render.yaml             Render Blueprint
 ```
+
+## Limitations
+
+- **Confidence is a signal, not proof.** A query can pass every check and still be wrong; read it.
+- **The checks are best effort.** They are structural rules that only fire when confident,
+  and the dialect rules are a curated list, not a full grammar. Subtle mistakes can pass,
+  and nothing here can tell whether the SQL answers the *meaning* of your question beyond
+  the back-translation check. Treat a high score as "no known problems", not "correct".
+- **The trial run uses SQLite for every dialect.** Other dialects are translated first, so
+  only errors that are the query's own fault count, and constructs SQLite lacks are
+  skipped rather than blamed on the query. It runs on made-up data, never yours.
+- **Repairs cost extra LLM calls** (up to two per request) and add a little latency when
+  the first draft has problems.
+- **The endpoints are unauthenticated** and spend your Groq key. They are rate limited
+  (10 requests a minute per address, 120 an hour overall, both configurable), which keeps
+  one visitor from using up the quota but is not access control. The limits are kept in
+  memory, so they reset on restart and are per instance.
+- **LLM output varies** between runs, as the eval shows.
+- Fonts load from the Google Fonts CDN.
+
+## License
+
+[MIT](LICENSE)

@@ -5,10 +5,12 @@ import {
   clearStoredHistory,
   clearStoredSchema,
   loadDialect,
+  loadGuideSeen,
   loadHistory,
   loadSchema,
   loadTheme,
   storeDialect,
+  storeGuideSeen,
   storeHistory,
   storeSchema,
   storeTheme,
@@ -124,5 +126,26 @@ describe("history storage", () => {
       throw new Error("full");
     });
     expect(() => storeHistory([entry(1)])).not.toThrow();
+  });
+});
+
+describe("guide storage", () => {
+  it("remembers that the guide was opened", () => {
+    expect(loadGuideSeen()).toBe(false);
+    storeGuideSeen();
+    expect(loadGuideSeen()).toBe(true);
+  });
+
+  it("survives storage being blocked", () => {
+    const blocked = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    const blockedSet = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(loadGuideSeen()).toBe(false);
+    expect(() => storeGuideSeen()).not.toThrow();
+    blocked.mockRestore();
+    blockedSet.mockRestore();
   });
 });

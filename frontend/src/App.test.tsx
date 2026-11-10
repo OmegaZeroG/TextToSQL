@@ -16,6 +16,7 @@ vi.mock("./api", async (importOriginal) => {
 
 import * as api from "./api";
 import App from "./App";
+import { GUIDE_STEPS } from "./lib/guideSteps";
 import { loadHistory, loadSchema, storeHistory, storeSchema } from "./storage";
 import { CUSTOMERS_AND_ORDERS, CUSTOMERS_AND_ORDERS_DDL, makeResponse, makeSchema } from "./test/factories";
 import type { GenerateOutcome, HistoryEntry } from "./types";
@@ -420,6 +421,47 @@ describe("server status and theme", () => {
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(localStorage.getItem("text-to-sql:theme")).toBe("dark");
     expect(screen.getByRole("button", { name: "Switch to light theme" })).toBeInTheDocument();
+  });
+});
+
+describe("guided tour", () => {
+  const guideButton = () => screen.getByRole("button", { name: "Start the guided tour" });
+
+  it("opens from the Guide button, walks the steps and closes", async () => {
+    const { user } = setup();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await user.click(guideButton());
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("Add your schema");
+
+    await user.click(screen.getByRole("button", { name: /next/i }));
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("Ask in plain English");
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(guideButton()).toHaveFocus();
+  });
+
+  it("shows a new-hint dot until the guide has been opened once", async () => {
+    const { user } = setup();
+    expect(guideButton().querySelector(".animate-soft-pulse")).not.toBeNull();
+
+    await user.click(guideButton());
+    expect(guideButton().querySelector(".animate-soft-pulse")).toBeNull();
+    expect(localStorage.getItem("text-to-sql:guide-seen")).toBe("1");
+  });
+
+  it("has no hint for a returning visitor", () => {
+    localStorage.setItem("text-to-sql:guide-seen", "1");
+    setup();
+    expect(guideButton().querySelector(".animate-soft-pulse")).toBeNull();
+  });
+
+  it("every step points at an element that exists on the page", () => {
+    setup();
+    for (const step of GUIDE_STEPS) {
+      if (step.target) expect(document.querySelector(`[data-guide="${step.target}"]`), step.target).not.toBeNull();
+    }
   });
 });
 

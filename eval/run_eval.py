@@ -1,89 +1,137 @@
 """Runs the golden dataset against a live API instance and reports:
-- execution match (do results match the expected SQL's results, regardless
-  of whether the generated SQL is textually identical)
-- guardrail effectiveness (are disguised write attempts blocked?)
-- ambiguity handling (does the system ask for clarification instead of guessing?)
+- execution match: does the generated SQL return the same rows as the
+  hand-written expected SQL (regardless of whether the text is identical)
+- guardrail effectiveness: are write/DDL requests blocked instead of answered?
+- ambiguity handling: does it ask instead of guessing?
+- unanswerable handling: does it say so when the schema can't answer?
 
-Usage: python run_eval.py [--api-url http://localhost:8000]
+The API generates SQL for the sample schema (eval/sample_db.py) exactly the way
+the web UI does, via POST /v1/generate. The grading happens here: both the
+generated and the expected SQL run against a throwaway in-memory SQLite copy of
+that schema. The product itself never executes anything.
+
+Usage: python eval/run_eval.py [--api-url http://localhost:8000]
 """
 import argparse
 import json
-import os
 import re
+import sqlite3
 import sys
-from datetime import date, datetime
+import time
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-import pandas as pd
 import requests
-from sqlalchemy import create_engine, text
+
+sys.path.insert(0, str(Path(__file__).parent))
+from sample_db import SAMPLE_DDL, build_sample_db  # noqa: E402
 
 DATASET_PATH = Path(__file__).parent / "golden_dataset.json"
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5433/texttosql"
-)
+DIALECT = "sqlite"
 
-# Matches ISO-ish date/timestamp strings (e.g. "2024-12", "2024-12-01",
-# "2024-12-01 00:00:00", "2024-12-01T00:00:00Z", "2024-12-01T00:00:00.5+05:30")
-# so they can be normalized against native date/datetime/Timestamp objects.
+# ISO-ish date/timestamp strings, e.g. "2024-12", "2024-12-01",
+# "2024-12-01 00:00:00", "2024-12-01T00:00:00Z", "2024-12-01T00:00:00.5+05:30".
 _DATE_LIKE = re.compile(
     r"^\d{4}-\d{2}(-\d{2})?([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$"
 )
 
 
-def _to_naive_utc_iso(value) -> str:
-    ts = pd.Timestamp(value)
-    if ts.tzinfo is not None:
-        ts = ts.tz_convert("UTC").tz_localize(None)
-    return ts.isoformat()
+def _normalize_date(text: str) -> str:
+    if re.fullmatch(r"\d{4}-\d{2}", text):
+        text += "-01"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    if parsed.time() == datetime.min.time():
+        return parsed.date().isoformat()
+    return parsed.isoformat()
 
 
 def _normalize(value):
-    """Makes execution-match comparison robust to two harmless sources of
-    false negatives: (1) the API JSON-encodes Decimal as a string while a
-    direct DB query keeps it as Decimal, and (2) two SQL queries can
-    represent the same month/day at different granularities/formats
-    (e.g. '2024-12', '2024-12-01T00:00:00Z' and a tz-aware DATE_TRUNC
-    timestamp all name the same month)."""
+    """Makes the comparison robust to harmless differences: ints vs floats
+    (SUM over a REAL column can come back as 12.0 or 12), float rounding noise,
+    booleans as 0/1, and the same day written as '2024-12', '2024-12-01' or
+    '2024-12-01T00:00:00Z'."""
     if value is None:
         return None
-    if isinstance(value, (datetime, date, pd.Timestamp)):
-        return _to_naive_utc_iso(value)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, float):
+        value = round(value, 4)
+        return int(value) if value == int(value) else value
+    if isinstance(value, (datetime, date)):
+        return _normalize_date(value.isoformat())
     if isinstance(value, str) and _DATE_LIKE.match(value):
-        return _to_naive_utc_iso(value)
-    return str(value)
+        return _normalize_date(value)
+    return value
 
 
-def run_expected_sql(sql: str) -> pd.DataFrame:
-    engine = create_engine(DATABASE_URL)
-    with engine.connect() as conn:
-        result = conn.execute(text(sql))
-        return pd.DataFrame(result.fetchall(), columns=list(result.keys()))
-
-
-def rows_match(actual_columns: list[str], actual_rows: list[list], expected_df: pd.DataFrame) -> bool:
-    """Column names and order are an arbitrary LLM choice (COUNT(*) might
-    come back as "count" or "total_units", and a query might add a
-    harmless extra column like `email`) so we don't compare by column
-    name or position. Instead: for every expected row, its normalized
-    values must be a *subset* of some actual row's normalized values,
-    with a 1-to-1 pairing between expected and actual rows (a bijection)
-    so row counts and per-row content both have to line up — just not
-    the column layout used to get there."""
-    del actual_columns  # unused: comparison is value-set based, not column-based
-    expected_rows = expected_df.values.tolist()
+def rows_match(actual_rows: list, expected_rows: list) -> bool:
+    """Column names and order are an arbitrary LLM choice (COUNT(*) might come
+    back as "count" or "total_units", and a query may add a harmless extra column
+    like `email`), so neither is compared. Instead, for every expected row its
+    normalized values must be a *subset* of some actual row's values, with a 1-to-1
+    pairing between expected and actual rows (a bijection) so row counts and
+    per-row content both have to line up, just not the column layout."""
     if len(actual_rows) != len(expected_rows):
         return False
 
-    actual_sets = [{_normalize(v) for v in row} for row in actual_rows]
-    remaining = list(actual_sets)
+    remaining = [{_normalize(v) for v in row} for row in actual_rows]
     for expected_row in expected_rows:
         expected_set = {_normalize(v) for v in expected_row}
-        match_idx = next((i for i, actual_set in enumerate(remaining) if expected_set <= actual_set), None)
-        if match_idx is None:
+        index = next((i for i, actual in enumerate(remaining) if expected_set <= actual), None)
+        if index is None:
             return False
-        remaining.pop(match_idx)
+        remaining.pop(index)
     return True
+
+
+def post_generate(api_url: str, question: str) -> requests.Response:
+    payload = {"question": question, "schema_ddl": SAMPLE_DDL, "dialect": DIALECT}
+    for attempt in range(4):
+        response = requests.post(f"{api_url}/v1/generate", json=payload, timeout=90)
+        if response.status_code != 429:  # rate limited by the LLM provider: back off and retry
+            return response
+        time.sleep(5 * (attempt + 1))
+    return response
+
+
+def error_kind(response: requests.Response) -> str | None:
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return None
+    return detail.get("kind") if isinstance(detail, dict) else None
+
+
+def grade(case: dict, response: requests.Response, db: sqlite3.Connection) -> tuple[bool, str, float | None]:
+    """Returns (passed, message, confidence)."""
+    difficulty = case["difficulty"]
+
+    if difficulty == "guardrail":
+        blocked = response.status_code == 200 and response.json().get("guardrail_blocked") is True
+        return blocked, "blocked by the guardrail" if blocked else f"expected a guardrail block, got HTTP {response.status_code}", None
+
+    if difficulty in ("ambiguous", "unanswerable"):
+        kind = error_kind(response)
+        ok = response.status_code == 422 and kind == difficulty
+        return ok, f"returned '{kind}'" if ok else f"expected '{difficulty}', got HTTP {response.status_code} kind={kind}", None
+
+    if response.status_code != 200:
+        return False, f"HTTP {response.status_code}: {response.text[:200]}", None
+
+    data = response.json()
+    confidence = data["confidence"]["overall"]
+    if data.get("guardrail_blocked"):
+        return False, f"wrongly blocked by the guardrail: {data.get('block_reason')}", confidence
+    try:
+        actual = db.execute(data["sql"]).fetchall()
+    except sqlite3.Error as exc:
+        return False, f"generated SQL failed to run: {exc}\n    {data['sql']}", confidence
+    expected = db.execute(case["expected_sql"]).fetchall()
+    if rows_match(actual, expected):
+        return True, f"execution match, confidence={confidence:.0%}", confidence
+    return False, f"results differ ({len(actual)} rows vs {len(expected)} expected)\n    {data['sql']}", confidence
 
 
 def main():
@@ -91,53 +139,30 @@ def main():
     parser.add_argument("--api-url", default="http://localhost:8000")
     args = parser.parse_args()
 
-    cases = json.loads(DATASET_PATH.read_text())
+    cases = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
+    db = build_sample_db()
     results = []
 
     for case in cases:
-        question = case["question"]
-        difficulty = case["difficulty"]
-        print(f"\n[{case['id']}] ({difficulty}) {question}")
-
+        print(f"\n[{case['id']}] ({case['difficulty']}) {case['question']}")
         try:
-            resp = requests.post(f"{args.api_url}/v1/query", json={"question": question}, timeout=60)
-        except Exception as exc:
-            print(f"  FAIL: request error: {exc}")
-            results.append({**case, "passed": False, "reason": str(exc)})
-            continue
-
-        if difficulty == "guardrail":
-            passed = resp.status_code == 200 and resp.json().get("guardrail_blocked") is True
-            print(f"  {'PASS' if passed else 'FAIL'}: expected guardrail block, got status {resp.status_code}")
-            results.append({**case, "passed": passed})
-            continue
-
-        if difficulty == "ambiguous":
-            passed = resp.status_code == 422
-            print(f"  {'PASS' if passed else 'FAIL'}: expected clarification request, got status {resp.status_code}")
-            results.append({**case, "passed": passed})
-            continue
-
-        if resp.status_code != 200:
-            print(f"  FAIL: status {resp.status_code}: {resp.text[:200]}")
-            results.append({**case, "passed": False, "reason": resp.text})
-            continue
-
-        data = resp.json()
-        try:
-            expected_df = run_expected_sql(case["expected_sql"])
-            passed = rows_match(data["columns"], data["rows"], expected_df)
-        except Exception as exc:
-            passed = False
-            print(f"  Comparison error: {exc}")
-
-        confidence = data["confidence"]["overall"]
-        print(f"  {'PASS' if passed else 'FAIL'}: execution match={passed}, confidence={confidence:.0%}")
+            response = post_generate(args.api_url, case["question"])
+            passed, message, confidence = grade(case, response, db)
+        except requests.RequestException as exc:
+            passed, message, confidence = False, f"request error: {exc}", None
+        print(f"  {'PASS' if passed else 'FAIL'}: {message}")
         results.append({**case, "passed": passed, "confidence": confidence})
 
+    by_difficulty: dict[str, list[bool]] = {}
+    for result in results:
+        by_difficulty.setdefault(result["difficulty"], []).append(result["passed"])
+
     total = len(results)
-    passed_count = sum(1 for r in results if r["passed"])
-    print(f"\n{'='*50}\n{passed_count}/{total} cases passed ({passed_count/total:.0%})")
+    passed_count = sum(r["passed"] for r in results)
+    print(f"\n{'=' * 50}")
+    for difficulty, outcomes in by_difficulty.items():
+        print(f"  {difficulty:<12} {sum(outcomes)}/{len(outcomes)}")
+    print(f"{passed_count}/{total} cases passed ({passed_count / total:.0%})")
 
     sys.exit(0 if passed_count == total else 1)
 

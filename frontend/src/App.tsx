@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { FALLBACK_DIALECTS, analyzeSchema, fetchDialects, generateSql, updateSchema } from "./api";
+import GuideTour from "./components/GuideTour";
 import Header from "./components/Header";
 import HistoryList from "./components/HistoryList";
 import QuestionCard from "./components/QuestionCard";
@@ -15,9 +16,11 @@ import {
   clearStoredHistory,
   clearStoredSchema,
   loadDialect,
+  loadGuideSeen,
   loadHistory,
   loadSchema,
   storeDialect,
+  storeGuideSeen,
   storeHistory,
   storeSchema,
 } from "./storage";
@@ -57,6 +60,8 @@ export default function App() {
   const [resultKey, setResultKey] = useState(0);
   const [announcement, setAnnouncement] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideSeen, setGuideSeen] = useState(() => loadGuideSeen());
 
   // Each request gets an id; a response is applied only if it is still the latest,
   // so a slow, stopped or superseded request can never overwrite a newer result.
@@ -73,6 +78,12 @@ export default function App() {
   }, [history]);
 
   const suggestions = useMemo(() => suggestQuestions(schema?.tables), [schema]);
+
+  function openGuide() {
+    setGuideOpen(true);
+    setGuideSeen(true);
+    storeGuideSeen();
+  }
 
   function handleDialectChange(id: string) {
     setDialectId(id);
@@ -247,7 +258,14 @@ export default function App() {
       >
         Skip to content
       </a>
-      <Header server={server.state} onRetry={server.retry} theme={theme} onToggleTheme={toggleTheme} />
+      <Header
+        server={server.state}
+        onRetry={server.retry}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onOpenGuide={openGuide}
+        guideHint={!guideSeen}
+      />
 
       <main id="main" className="mx-auto max-w-6xl px-4 pb-safe pt-8 sm:px-6 sm:pt-12">
         <section className="mb-8 max-w-3xl animate-rise-in sm:mb-10">
@@ -298,7 +316,7 @@ export default function App() {
             onFileError={(message) => setSchemaStatus({ kind: "error", message })}
           />
 
-          <div ref={resultRef} className="order-3 scroll-mt-20 lg:col-start-2 lg:row-start-2">
+          <div ref={resultRef} data-guide="result" className="order-3 scroll-mt-20 lg:col-start-2 lg:row-start-2">
             <ResultCard
               outcome={outcome}
               loading={generating}
@@ -318,6 +336,8 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      <GuideTour open={guideOpen} onClose={() => setGuideOpen(false)} />
 
       <div className="sr-only" role="status" aria-live="polite">
         {announcement}

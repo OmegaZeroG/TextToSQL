@@ -85,13 +85,9 @@ class TestGenerate:
             "syntax_valid": True,
             "back_translation_alignment": 1.0,
             "schema_check_passed": True,
+            "logic_check_passed": True,
             "overall": 1.0,
         }
-
-    def test_nothing_is_executed(self, api):
-        api.script(gen("SELECT COUNT(*) FROM customers"), BACK_TRANSLATION, alignment(1.0))
-        generate(api)
-        assert api.executed_sql == []
 
     def test_no_row_limit_is_forced_onto_the_sql(self, api):
         api.script(gen("SELECT name FROM customers;"), BACK_TRANSLATION, alignment(1.0))
@@ -116,26 +112,26 @@ class TestGenerate:
 
 class TestHallucinationDetection:
     def test_invented_table_is_warned_about_and_lowers_confidence(self, api):
-        api.script(gen("SELECT * FROM invoices"), BACK_TRANSLATION, alignment(1.0))
+        api.script(gen("SELECT * FROM invoices"), gen("SELECT * FROM invoices"), BACK_TRANSLATION, alignment(1.0))  # the repair attempt changes nothing
         body = generate(api).json()
         assert body["confidence"]["schema_check_passed"] is False
         assert any("invoices" in w for w in body["warnings"])
         assert body["confidence"]["overall"] < 1.0
 
     def test_invented_column_is_warned_about(self, api):
-        api.script(gen("SELECT c.phone FROM customers c"), BACK_TRANSLATION, alignment(1.0))
+        api.script(gen("SELECT c.phone FROM customers c"), gen("SELECT c.phone FROM customers c"), BACK_TRANSLATION, alignment(1.0))
         body = generate(api).json()
         assert body["confidence"]["schema_check_passed"] is False
         assert any("phone" in w for w in body["warnings"])
 
     def test_wrong_dialect_syntax_is_reported(self, api):
-        api.script(gen("SELECT name FROM customers LIMIT 5"), BACK_TRANSLATION, alignment(1.0))
+        api.script(gen("SELECT name FROM customers LIMIT 5"), gen("SELECT name FROM customers LIMIT 5"), BACK_TRANSLATION, alignment(1.0))
         body = generate(api, dialect="tsql").json()
         assert body["confidence"]["syntax_valid"] is False
         assert any("TOP" in w for w in body["warnings"])
 
     def test_low_confidence_adds_a_warning(self, api):
-        api.script(gen("SELECT * FROM invoices", confidence=1), BACK_TRANSLATION, alignment(0.0))
+        api.script(gen("SELECT * FROM invoices", confidence=1), gen("SELECT * FROM invoices", confidence=1), BACK_TRANSLATION, alignment(0.0))
         assert any("Low confidence" in w for w in generate(api).json()["warnings"])
 
     def test_a_failing_judge_does_not_fail_the_request(self, api):

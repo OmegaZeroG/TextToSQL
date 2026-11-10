@@ -49,6 +49,10 @@ export default {
           from: { opacity: "0", transform: "scale(0.97)" },
           to: { opacity: "1", transform: "scale(1)" },
         },
+        "tour-in": {
+          from: { opacity: "0", transform: "translateY(6px) scale(0.985)" },
+          to: { opacity: "1", transform: "translateY(0) scale(1)" },
+        },
         shimmer: { to: { transform: "translateX(100%)" } },
         "soft-pulse": { "50%": { opacity: "0.45" } },
         "pop-check": {
@@ -61,6 +65,7 @@ export default {
         "rise-in": "rise-in 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both",
         "fade-in": "fade-in 0.25s ease-out both",
         "scale-in": "scale-in 0.2s ease-out both",
+        "tour-in": "tour-in 0.28s cubic-bezier(0.2, 0.7, 0.2, 1) both",
         shimmer: "shimmer 1.6s ease-in-out infinite",
         "soft-pulse": "soft-pulse 1.6s ease-in-out infinite",
         "pop-check": "pop-check 0.35s ease-out both",

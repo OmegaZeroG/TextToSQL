@@ -47,6 +47,16 @@ export default function ConfidenceGauge({ confidence, schemaProvided, dialectLab
       value: confidence.syntax_valid ? "Yes" : "No",
       ok: confidence.syntax_valid,
     },
+    // Logic rules (NULL handling, division, GROUP BY, dates, dialect) and a trial run on test data.
+    ...(confidence.logic_check_passed === undefined
+      ? []
+      : [
+          {
+            name: "Passed logic checks",
+            value: confidence.logic_check_passed ? "Yes" : "Flagged",
+            ok: confidence.logic_check_passed,
+          },
+        ]),
   ];
 
   return (

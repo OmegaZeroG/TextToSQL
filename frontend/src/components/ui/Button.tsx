@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes } from "react";
+import { forwardRef, type ButtonHTMLAttributes } from "react";
 
 import { cn } from "../../lib/cn";
 import Spinner from "./Spinner";
@@ -31,18 +31,22 @@ const sizes: Record<Size, string> = {
   icon: "size-11 sm:size-10",
 };
 
-export default function Button({
-  variant = "outline",
-  size = "md",
-  loading = false,
-  className,
-  children,
-  disabled,
-  type = "button",
-  ...rest
-}: Props) {
+const Button = forwardRef<HTMLButtonElement, Props>(function Button(
+  {
+    variant = "outline",
+    size = "md",
+    loading = false,
+    className,
+    children,
+    disabled,
+    type = "button",
+    ...rest
+  },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type={type}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
@@ -53,4 +57,6 @@ export default function Button({
       {children}
     </button>
   );
-}
+});
+
+export default Button;

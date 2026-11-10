@@ -160,7 +160,7 @@ def _render(statements: list[exp.Create], dialect: str) -> str:
     # sqlglot's pretty printer explodes foreign-key references over three lines.
     return re.sub(
         r"(REFERENCES\s+\S+)\s*\(\s*([^()]*?)\s*\)",
-        lambda m: f"{m.group(1)} ({re.sub(r'\s+', ' ', m.group(2))})",
+        lambda m: m.group(1) + " (" + re.sub(r"\s+", " ", m.group(2)) + ")",  # no backslash inside an f-string: a SyntaxError before Python 3.12
         text,
     )
 

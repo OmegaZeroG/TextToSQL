@@ -58,6 +58,8 @@ class GenerateConfidence(BaseModel):
     syntax_valid: bool
     back_translation_alignment: float  # 0-1
     schema_check_passed: bool
+    # Logic and dialect rules plus the trial run on test data (sql_checks, sql_execution).
+    logic_check_passed: bool = True
     overall: float  # 0-1
 
 
@@ -76,50 +78,3 @@ class GenerateResponse(BaseModel):
     # the individual guesses it made, so the user can adopt or correct them.
     assumed_schema: str | None = None
     assumptions: list[str] = []
-
-
-class QueryRequest(BaseModel):
-    question: str = Field(..., min_length=1, max_length=1000)
-
-
-class ClarificationNeeded(BaseModel):
-    needs_clarification: bool = True
-    interpretations: list[str]
-    message: str
-
-
-class GeneratedSQL(BaseModel):
-    sql: str
-    explanation: str
-    confidence: int = Field(ge=1, le=5)
-    tables_used: list[str]
-
-
-class ConfidenceBreakdown(BaseModel):
-    syntax_valid: bool
-    back_translation_alignment: float  # 0-1
-    result_sanity_passed: bool
-    overall: float  # 0-1
-
-
-class QueryResponse(BaseModel):
-    question: str
-    sql: str
-    explanation: str
-    columns: list[str]
-    rows: list[list]
-    row_count: int
-    execution_time_ms: float
-    confidence: ConfidenceBreakdown
-    warnings: list[str] = []
-    guardrail_blocked: bool = False
-    block_reason: str | None = None
-
-
-class HistoryEntry(BaseModel):
-    id: int
-    question: str
-    sql: str
-    row_count: int
-    confidence: float
-    created_at: str

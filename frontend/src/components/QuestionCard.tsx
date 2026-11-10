@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from "react";
+import { useEffect } from "react";
 
 import { cn } from "../lib/cn";
 import { MAX_QUESTION_CHARS } from "../lib/limits";
@@ -44,12 +44,19 @@ export default function QuestionCard({
   const schemaOnly = !question.trim() && hasSchemaDraft;
   const nearLimit = question.length >= MAX_QUESTION_CHARS * 0.9;
 
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && canSubmit && !busy && !generating) {
-      event.preventDefault();
-      onSubmit();
+  // Listens on the window so the shortcut works wherever focus is (the dialect select,
+  // a guide button), not only inside the textarea.
+  const ready = canSubmit && !busy && !generating;
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault(); // also stops a focused button from being "clicked" by it
+        if (ready) onSubmit();
+      }
     }
-  }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [ready, onSubmit]);
 
   const hint = hasSchema
     ? "Answers are checked against your saved schema."
@@ -71,7 +78,7 @@ export default function QuestionCard({
       </header>
 
       <div className="space-y-4 p-4 sm:p-5">
-        <div className="relative">
+        <div className="relative" data-guide="question">
           <label htmlFor="question" className="sr-only">
             Your question
           </label>
@@ -79,7 +86,6 @@ export default function QuestionCard({
             id="question"
             value={question}
             onChange={(event) => onQuestionChange(event.target.value)}
-            onKeyDown={handleKeyDown}
             maxLength={MAX_QUESTION_CHARS}
             rows={4}
             placeholder={`e.g. ${suggestions[0] ?? "Top 5 customers by total spend last month"}`}
@@ -101,7 +107,7 @@ export default function QuestionCard({
             <label htmlFor="dialect" className="text-xs text-muted-foreground">
               SQL dialect
             </label>
-            <div className="relative">
+            <div className="relative" data-guide="dialect">
               <select
                 id="dialect"
                 value={dialectId}
@@ -132,6 +138,7 @@ export default function QuestionCard({
               onClick={onSubmit}
               loading={generating || busy}
               disabled={!canSubmit}
+              data-guide="generate"
               className="flex-1 sm:flex-none sm:min-w-[9.5rem]"
             >
               {generating ? "Generating" : busy ? "Working" : schemaOnly ? "Save schema" : "Generate SQL"}

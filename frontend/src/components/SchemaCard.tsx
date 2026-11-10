@@ -198,6 +198,7 @@ export default function SchemaCard({
   return (
     <aside
       aria-label="Schema"
+      data-guide="schema"
       className={cn("overflow-hidden rounded-lg border border-border bg-card shadow-card", className)}
     >
       {/* Phones: a tappable summary row that expands the card. */}

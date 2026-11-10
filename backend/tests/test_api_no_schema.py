@@ -59,21 +59,16 @@ class TestWithoutASchema:
         assert "Do NOT ask for clarification" in system
         assert "SCHEMA:" not in system
 
-    def test_nothing_is_executed(self, api):
-        api.script(no_schema_gen(), BACK_TRANSLATION, alignment(1.0))
-        generate(api)
-        assert api.executed_sql == []
-
 
 class TestSelfConsistencyCheck:
     def test_sql_using_a_column_missing_from_its_own_assumed_schema_is_flagged(self, api):
-        api.script(no_schema_gen("SELECT phone FROM customers"), BACK_TRANSLATION, alignment(1.0))
+        api.script(no_schema_gen("SELECT phone FROM customers"), no_schema_gen("SELECT phone FROM customers"), BACK_TRANSLATION, alignment(1.0))  # the repair attempt changes nothing
         body = generate(api).json()
         assert body["confidence"]["schema_check_passed"] is False
         assert any("phone" in w for w in body["warnings"])
 
     def test_sql_using_a_table_missing_from_its_own_assumed_schema_is_flagged(self, api):
-        api.script(no_schema_gen("SELECT * FROM invoices"), BACK_TRANSLATION, alignment(1.0))
+        api.script(no_schema_gen("SELECT * FROM invoices"), no_schema_gen("SELECT * FROM invoices"), BACK_TRANSLATION, alignment(1.0))
         body = generate(api).json()
         assert body["confidence"]["schema_check_passed"] is False
         assert any("invoices" in w for w in body["warnings"])
@@ -100,7 +95,7 @@ class TestSelfConsistencyCheck:
         assert generate(api).status_code == 200
 
     def test_wrong_dialect_syntax_is_still_caught_without_a_schema(self, api):
-        api.script(no_schema_gen("SELECT name FROM customers LIMIT 5"), BACK_TRANSLATION, alignment(1.0))
+        api.script(no_schema_gen("SELECT name FROM customers LIMIT 5"), no_schema_gen("SELECT name FROM customers LIMIT 5"), BACK_TRANSLATION, alignment(1.0))
         body = generate(api, dialect="tsql").json()
         assert body["confidence"]["syntax_valid"] is False
         assert any("TOP" in w for w in body["warnings"])

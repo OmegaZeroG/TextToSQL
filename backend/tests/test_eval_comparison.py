@@ -1,97 +1,165 @@
-"""Tests for the eval harness's own result-comparison logic (eval/run_eval.py).
+"""Tests for the eval harness's own result-comparison logic and golden dataset
+(eval/run_eval.py, eval/sample_db.py, eval/golden_dataset.json).
 
-If this logic is wrong the eval pass rate is meaningless, so it gets tests too.
-Each case below is a real false-negative the first versions of the harness hit.
+If the comparison is wrong the eval pass rate is meaningless, so it gets tests
+too. None of this needs the network or an LLM.
 """
 import importlib.util
-from datetime import datetime, timezone
-from decimal import Decimal
+import json
+import sys
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-import pandas as pd
+import pytest
 
-_spec = importlib.util.spec_from_file_location(
-    "run_eval", Path(__file__).resolve().parents[2] / "eval" / "run_eval.py"
-)
+from app.guardrails import check_sql
+from app.schema_parser import parse_ddl
+from app.schema_validation import check_sql_against_schema
+
+EVAL_DIR = Path(__file__).resolve().parents[2] / "eval"
+sys.path.insert(0, str(EVAL_DIR))  # run_eval imports sample_db as a sibling module
+
+_spec = importlib.util.spec_from_file_location("run_eval", EVAL_DIR / "run_eval.py")
 run_eval = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(run_eval)
 
+from sample_db import SAMPLE_DDL, build_sample_db  # noqa: E402
+
 rows_match = run_eval.rows_match
+CASES = json.loads((EVAL_DIR / "golden_dataset.json").read_text(encoding="utf-8"))
+ANSWERABLE = [c for c in CASES if c["expected_sql"]]
 
 
-def expected(columns, rows):
-    return pd.DataFrame(rows, columns=columns)
+class TestRowsMatch:
+    def test_identical_results_match(self):
+        assert rows_match([(61,)], [(61,)])
+
+    def test_column_layout_is_irrelevant(self):
+        assert rows_match([("Morgan", 34)], [(34, "Morgan")])
+
+    def test_extra_columns_in_the_generated_query_are_allowed(self):
+        assert rows_match([(34, "Morgan", "Nguyen", "m@example.com")], [(34, "Morgan", "Nguyen")])
+
+    def test_row_order_is_irrelevant(self):
+        assert rows_match([(2,), (1,)], [(1,), (2,)])
+
+    def test_ints_and_floats_are_equal(self):
+        assert rows_match([(12.0,)], [(12,)])
+
+    def test_float_rounding_noise_is_ignored(self):
+        assert rows_match([(10565.400000000001,)], [(10565.4,)])
+
+    def test_booleans_match_zero_and_one(self):
+        assert rows_match([(True,)], [(1,)])
+
+    def test_null_values_match_each_other(self):
+        assert rows_match([(None,)], [(None,)])
+
+    def test_different_values_do_not_match(self):
+        assert not rows_match([(62,)], [(61,)])
+
+    def test_different_row_counts_do_not_match(self):
+        assert not rows_match([(1,)], [(1,), (2,)])
+
+    def test_duplicate_rows_are_counted_not_collapsed(self):
+        assert not rows_match([(1,)], [(1,), (1,)])
+
+    def test_a_row_missing_an_expected_value_does_not_match(self):
+        assert not rows_match([("x",)], [("x", "y")])
+
+    def test_empty_results_match_each_other(self):
+        assert rows_match([], [])
 
 
-def test_identical_results_match():
-    assert rows_match(["n"], [[61]], expected(["count"], [[61]]))
+class TestDateNormalization:
+    @pytest.mark.parametrize("actual", ["2024-12", "2024-12-01", "2024-12-01 00:00:00", "2024-12-01T00:00:00Z"])
+    def test_the_same_day_in_any_format_matches(self, actual):
+        assert rows_match([(actual, 31)], [("2024-12-01", 31)])
+
+    def test_real_date_objects_match_strings(self):
+        assert rows_match([("2024-12-01",)], [(date(2024, 12, 1),)])
+        assert rows_match([("2024-12-01T00:00:00Z",)], [(datetime(2024, 12, 1, tzinfo=timezone.utc),)])
+
+    def test_a_utc_offset_is_converted_before_comparing(self):
+        assert rows_match([("2024-12-01T05:30:00+05:30",)], [("2024-12-01",)])
+
+    def test_fractional_seconds_are_accepted(self):
+        assert rows_match([("2024-12-01T00:00:00.5Z",)], [("2024-12-01T00:00:00.5",)])
+
+    def test_a_different_day_does_not_match(self):
+        assert not rows_match([("2024-11-01",)], [("2024-12-01",)])
+
+    def test_non_date_strings_are_left_alone(self):
+        assert not rows_match([("2024-12 report",)], [("2024-12-01",)])
 
 
-def test_api_decimal_strings_match_database_decimals():
-    """FastAPI serialises Decimal as a JSON string; the eval's own DB query keeps Decimal."""
-    assert rows_match(["total"], [["10565.40"]], expected(["total"], [[Decimal("10565.40")]]))
+class TestSampleDatabase:
+    def test_is_identical_on_every_build(self):
+        first = build_sample_db().execute("SELECT SUM(quantity * unit_price) FROM order_items").fetchone()
+        second = build_sample_db().execute("SELECT SUM(quantity * unit_price) FROM order_items").fetchone()
+        assert first == second
+
+    def test_the_sample_ddl_parses_as_sqlite(self):
+        schema = parse_ddl(SAMPLE_DDL, "sqlite")
+        assert {t.name for t in schema.tables} == {"categories", "products", "customers", "orders", "order_items"}
+
+    def test_the_database_is_read_only_once_built(self):
+        import sqlite3
+
+        with pytest.raises(sqlite3.OperationalError):
+            build_sample_db().execute("DELETE FROM orders")
 
 
-def test_column_aliases_are_irrelevant():
-    assert rows_match(["customer_count"], [[61]], expected(["count"], [[61]]))
+class TestStreakCustomers:
+    """The hand-built customers give the streak question a known answer."""
+
+    @staticmethod
+    def streaks():
+        case = next(c for c in CASES if c["id"] == "q13")
+        return {row[0]: row[1:] for row in build_sample_db().execute(case["expected_sql"]).fetchall()}
+
+    def test_a_run_with_several_orders_in_one_month_counts_that_month_once(self):
+        assert self.streaks()[121] == ("2025-01-01", "2025-03-01", 3)
+
+    def test_a_gap_breaks_the_run(self):
+        assert 122 not in self.streaks()
+
+    def test_the_longest_run_wins(self):
+        assert self.streaks()[123] == ("2025-06-01", "2025-09-01", 4)
+
+    def test_equal_runs_go_to_the_earliest(self):
+        assert self.streaks()[124] == ("2025-01-01", "2025-03-01", 3)
+
+    def test_a_run_can_cross_a_year_end(self):
+        assert self.streaks()[125] == ("2025-11-01", "2026-01-01", 3)
+
+    def test_the_cancelled_percentage_has_a_real_answer(self):
+        case = next(c for c in CASES if c["id"] == "q14")
+        (value,), = build_sample_db().execute(case["expected_sql"]).fetchall()
+        assert 0 < value < 100
 
 
-def test_extra_columns_in_the_generated_query_are_allowed():
-    actual_rows = [[34, "Morgan", "Nguyen", "morgan.nguyen34@example.com"]]
-    assert rows_match(
-        ["customer_id", "first_name", "last_name", "email"],
-        actual_rows,
-        expected(["customer_id", "first_name", "last_name"], [[34, "Morgan", "Nguyen"]]),
-    )
+class TestGoldenDataset:
+    def test_ids_are_unique_and_difficulties_known(self):
+        assert len({c["id"] for c in CASES}) == len(CASES)
+        assert {c["difficulty"] for c in CASES} <= {"easy", "medium", "hard", "ambiguous", "unanswerable", "guardrail"}
 
+    def test_every_kind_of_behaviour_is_covered(self):
+        assert {"ambiguous", "unanswerable", "guardrail"} <= {c["difficulty"] for c in CASES}
 
-def test_row_order_is_irrelevant():
-    assert rows_match(["n"], [[2], [1]], expected(["n"], [[1], [2]]))
+    @pytest.mark.parametrize("case", ANSWERABLE, ids=lambda c: c["id"])
+    def test_expected_sql_runs_and_returns_rows(self, case):
+        rows = build_sample_db().execute(case["expected_sql"]).fetchall()
+        assert rows, f"{case['id']}'s expected SQL returns nothing, so it can't tell right from wrong"
 
+    @pytest.mark.parametrize("case", ANSWERABLE, ids=lambda c: c["id"])
+    def test_expected_sql_passes_our_own_checks(self, case):
+        """The answer key must itself be something the product would accept."""
+        assert check_sql(case["expected_sql"]).allowed
+        schema = parse_ddl(SAMPLE_DDL, "sqlite")
+        result = check_sql_against_schema(case["expected_sql"], schema, "sqlite")
+        assert result.syntax_valid and result.schema_ok, result.problems
 
-def test_timezone_aware_timestamp_matches_a_plain_month_string():
-    """date_trunc() returns timestamptz; a TO_CHAR(..., 'YYYY-MM') query returns '2024-12'."""
-    month = datetime(2024, 12, 1, tzinfo=timezone.utc)
-    assert rows_match(["month", "n"], [["2024-12", 31]], expected(["month", "n"], [[month, 31]]))
-
-
-def test_null_values_match_each_other():
-    assert rows_match(["a"], [[None]], expected(["a"], [[None]]))
-
-
-def test_different_values_do_not_match():
-    assert not rows_match(["n"], [[62]], expected(["n"], [[61]]))
-
-
-def test_different_row_counts_do_not_match():
-    assert not rows_match(["n"], [[1]], expected(["n"], [[1], [2]]))
-
-
-def test_duplicate_rows_are_counted_not_collapsed():
-    assert not rows_match(["n"], [[1]], expected(["n"], [[1], [1]]))
-
-
-def test_a_row_missing_an_expected_value_does_not_match():
-    assert not rows_match(["a"], [["x"]], expected(["a", "b"], [["x", "y"]]))
-
-
-def test_utc_timestamp_string_from_the_api_matches_a_tz_aware_database_value():
-    """The API serialises tz-aware datetimes as '...T00:00:00Z'. Regression: the
-    normaliser didn't recognise the Z suffix, so a correct raw-timestamp answer failed."""
-    month = datetime(2024, 12, 1, tzinfo=timezone.utc)
-    assert rows_match(["m", "n"], [["2024-12-01T00:00:00Z", 31]], expected(["m", "n"], [[month, 31]]))
-
-
-def test_timestamp_with_a_utc_offset_is_converted_before_comparing():
-    month = datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc)
-    assert rows_match(["m"], [["2024-12-01T05:30:00+05:30"]], expected(["m"], [[month]]))
-
-
-def test_fractional_seconds_are_accepted():
-    month = datetime(2024, 12, 1, 0, 0, 0, 500000, tzinfo=timezone.utc)
-    assert rows_match(["m"], [["2024-12-01T00:00:00.5Z"]], expected(["m"], [[month]]))
-
-
-def test_a_different_instant_does_not_match():
-    month = datetime(2024, 12, 1, tzinfo=timezone.utc)
-    assert not rows_match(["m"], [["2024-11-01T00:00:00Z"]], expected(["m"], [[month]]))
+    @pytest.mark.parametrize("case", [c for c in CASES if c["difficulty"] == "guardrail"], ids=lambda c: c["id"])
+    def test_guardrail_questions_are_write_requests(self, case):
+        assert case["expected_sql"] is None

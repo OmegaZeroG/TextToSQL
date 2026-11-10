@@ -4,6 +4,7 @@ const SCHEMA_KEY = "text-to-sql:schema:v1";
 const DIALECT_KEY = "text-to-sql:dialect";
 const THEME_KEY = "text-to-sql:theme";
 const HISTORY_KEY = "text-to-sql:history:v1";
+const GUIDE_KEY = "text-to-sql:guide-seen";
 
 export const MAX_HISTORY = 15;
 
@@ -113,5 +114,22 @@ export function clearStoredHistory(): void {
     localStorage.removeItem(HISTORY_KEY);
   } catch {
     // nothing to clear
+  }
+}
+
+/** Whether the guided tour has been opened before (only used to hide the "new" hint). */
+export function loadGuideSeen(): boolean {
+  try {
+    return localStorage.getItem(GUIDE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function storeGuideSeen(): void {
+  try {
+    localStorage.setItem(GUIDE_KEY, "1");
+  } catch {
+    // the hint will simply show again
   }
 }

@@ -1,13 +1,6 @@
 import pytest
 
-from app import guardrails
 from app.guardrails import check_sql
-
-
-@pytest.fixture(autouse=True)
-def default_limits(monkeypatch):
-    monkeypatch.setattr(guardrails, "MAX_ROW_LIMIT", 1000)
-    monkeypatch.setattr(guardrails, "MAX_SUBQUERY_DEPTH", 3)
 
 
 @pytest.mark.parametrize("sql", [
@@ -61,70 +54,19 @@ def test_blocks_empty_input(sql):
     assert not check_sql(sql).allowed
 
 
-def test_injects_row_limit_when_missing():
-    assert check_sql("SELECT * FROM orders").sql == "SELECT * FROM orders LIMIT 1000"
+def test_strips_the_trailing_semicolon():
+    assert check_sql("SELECT 1;").sql == "SELECT 1"
 
 
-def test_strips_trailing_semicolon_before_adding_limit():
-    assert check_sql("SELECT 1;").sql == "SELECT 1 LIMIT 1000"
+def test_never_adds_or_changes_a_limit():
+    # Nothing is executed, so the SQL is handed back exactly as written.
+    assert check_sql("SELECT * FROM orders").sql == "SELECT * FROM orders"
+    assert check_sql("SELECT * FROM orders LIMIT 50000").sql == "SELECT * FROM orders LIMIT 50000"
 
 
-def test_keeps_a_smaller_existing_limit():
-    assert check_sql("SELECT * FROM orders LIMIT 5").sql == "SELECT * FROM orders LIMIT 5"
+def test_deep_nesting_is_allowed():
+    assert check_sql("SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1) a) b) c) d").allowed
 
 
-def test_limit_match_is_case_insensitive():
-    assert "LIMIT 7" in check_sql("select * from orders limit 7").sql
-
-
-def test_caps_an_oversized_limit():
-    assert check_sql("SELECT * FROM orders LIMIT 50000").sql == "SELECT * FROM orders LIMIT 1000"
-
-
-def test_row_limit_is_configurable(monkeypatch):
-    monkeypatch.setattr(guardrails, "MAX_ROW_LIMIT", 25)
-    assert check_sql("SELECT * FROM orders").sql.endswith("LIMIT 25")
-
-
-class TestWhenNotExecuting:
-    """for_execution=False: SQL is only generated for display, so the cost limits
-    (row cap, nesting depth) don't apply, but the safety rules must."""
-
-    def test_no_row_limit_is_injected(self):
-        assert check_sql("SELECT * FROM orders;", for_execution=False).sql == "SELECT * FROM orders"
-
-    def test_an_existing_limit_is_left_alone(self):
-        assert check_sql("SELECT * FROM orders LIMIT 50000", for_execution=False).sql == "SELECT * FROM orders LIMIT 50000"
-
-    def test_deep_nesting_is_allowed(self):
-        assert check_sql("SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1) a) b) c) d", for_execution=False).allowed
-
-    @pytest.mark.parametrize("sql", [
-        "DELETE FROM orders",
-        "DROP TABLE orders",
-        "UPDATE orders SET status = 'x'",
-        "SELECT 1; DROP TABLE orders",
-        "WITH d AS (DELETE FROM orders RETURNING *) SELECT * FROM d",
-        "",
-    ])
-    def test_safety_rules_still_apply(self, sql):
-        assert not check_sql(sql, for_execution=False).allowed
-
-
-DEPTH_3 ="SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1) a) b) c"
-DEPTH_4 = "SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT 1) a) b) c) d"
-
-
-def test_allows_nesting_at_the_limit():
-    assert check_sql(DEPTH_3).allowed
-
-
-def test_blocks_nesting_beyond_the_limit():
-    result = check_sql(DEPTH_4)
-    assert not result.allowed
-    assert "nesting depth" in result.reason
-
-
-def test_nesting_limit_is_configurable(monkeypatch):
-    monkeypatch.setattr(guardrails, "MAX_SUBQUERY_DEPTH", 1)
-    assert not check_sql("SELECT * FROM (SELECT * FROM (SELECT 1) a) b").allowed
+def test_blocked_result_carries_no_sql():
+    assert check_sql("DROP TABLE orders").sql is None

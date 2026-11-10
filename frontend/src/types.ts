@@ -39,6 +39,8 @@ export interface GenerateConfidence {
   syntax_valid: boolean;
   back_translation_alignment: number;
   schema_check_passed: boolean;
+  /** Logic, dialect and trial-run checks. Absent when talking to an older server. */
+  logic_check_passed?: boolean;
   overall: number;
 }
 

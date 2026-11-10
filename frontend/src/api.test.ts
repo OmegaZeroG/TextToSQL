@@ -160,6 +160,12 @@ describe("generateSql", () => {
     });
   });
 
+  it("shows the rate-limit message from a 429 as it is", async () => {
+    const detail = "You're sending requests too quickly. Please try again in about 12 seconds.";
+    stubFetch({ status: 429, body: { detail } });
+    expect(await generateSql("q", null, "postgres")).toEqual({ kind: "error", message: detail });
+  });
+
   it("reports an unreachable API", async () => {
     stubFetch(new TypeError("Failed to fetch"));
     const outcome = await generateSql("q", null, "postgres");

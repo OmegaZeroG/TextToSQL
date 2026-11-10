@@ -8,12 +8,12 @@
  * oklch channel triple (L C H) so Tailwind can add opacity: bg-primary/10.
  */
 :root {
-  --background: 97.8% 0.007 90;
+  --background: 95.6% 0.016 88;
   --foreground: 23% 0.018 257;
-  --card: 99.8% 0.003 90;
-  --border: 89% 0.012 250;
-  --input: 88% 0.014 250;
-  --muted: 95% 0.008 80;
+  --card: 98.2% 0.01 90;
+  --border: 87% 0.016 85;
+  --input: 86% 0.018 85;
+  --muted: 93.2% 0.015 86;
   --muted-foreground: 51% 0.02 250;
   --primary: 42% 0.11 164;
   --primary-foreground: 98.5% 0.01 145;
@@ -36,27 +36,27 @@
 }
 
 .dark {
-  --background: 17% 0.012 165;
-  --foreground: 95% 0.008 90;
-  --card: 21% 0.014 165;
-  --border: 30% 0.016 165;
-  --input: 33% 0.016 165;
-  --muted: 25% 0.012 165;
-  --muted-foreground: 70% 0.02 165;
-  --primary: 70% 0.14 163;
-  --primary-foreground: 17% 0.03 165;
-  --secondary: 27% 0.025 165;
-  --secondary-foreground: 88% 0.05 165;
-  --accent: 28% 0.045 165;
-  --accent-foreground: 88% 0.08 160;
-  --destructive: 70% 0.19 25;
+  --background: 17% 0.009 165;
+  --foreground: 92% 0.012 150;
+  --card: 20.5% 0.011 165;
+  --border: 32% 0.012 165;
+  --input: 29% 0.012 165;
+  --muted: 23.5% 0.01 165;
+  --muted-foreground: 66% 0.015 155;
+  --primary: 73% 0.105 155;
+  --primary-foreground: 19% 0.025 160;
+  --secondary: 25.5% 0.012 165;
+  --secondary-foreground: 87% 0.012 150;
+  --accent: 29% 0.027 157;
+  --accent-foreground: 87% 0.045 155;
+  --destructive: 67% 0.16 25;
   --warning: 80% 0.15 85;
   --warning-foreground: 86% 0.1 85;
-  --ring: 65% 0.12 163;
+  --ring: 66% 0.085 155;
 
-  --syn-keyword: 75% 0.14 163;
-  --syn-string: 80% 0.12 70;
-  --syn-number: 76% 0.11 240;
+  --syn-keyword: 75% 0.11 155;
+  --syn-string: 80% 0.11 85;
+  --syn-number: 76% 0.08 205;
   --syn-comment: 62% 0.02 165;
   --syn-function: 78% 0.11 310;
 

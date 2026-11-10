@@ -8,8 +8,6 @@ services:
     dockerContext: .
     healthCheckPath: /health
     envVars:
-      - key: DATABASE_URL
-        sync: false
       - key: GROQ_API_KEY
         sync: false
       - key: LLM_PROVIDER
